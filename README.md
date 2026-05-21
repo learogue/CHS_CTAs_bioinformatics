@@ -2,9 +2,9 @@
 
 This repository contains scripts used for the bioinformatic analyses presented in the article:
 
-**Identification of immunopeptides (pHLA) as candidate therapeutic targets in chondrosarcoma**  
-Léa Rogue, Jean-Marc Monneuse, Céline Béchon, Lola Cepero, Caroline Peyrode, Sandrine Viala, Maud Privat, Yannick Bidet, Adrien Saliou, Paul-Olivier Rouzaire, Elisabeth Miot-Noirault, Florent Cachin and Aurélien Pommier
-*Manuscript in preparation*
+> **Identification of immunopeptides (pHLA) as candidate therapeutic targets in chondrosarcoma**  
+> Léa Rogue, Jean-Marc Monneuse, Céline Béchon, Lola Cepero, Caroline Peyrode, Sandrine Viala, Maud Privat, Yannick Bidet, Adrien Saliou, Paul-Olivier Rouzaire, Elisabeth Miot-Noirault, Florent Cachin and Aurélien Pommier
+> *Manuscript in preparation*
 
 The objective of this work is to characterize Cancer-Testis Antigens (CTAs) in chondrosarcoma, integrating transcriptomic and immunopeptidomic data to identify potential peptides presented on the surface of tumor cells via the HLA-I complex.
 
