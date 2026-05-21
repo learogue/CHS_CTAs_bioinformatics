@@ -1,0 +1,299 @@
+---
+title: "Immunophenotyping - Fig5"
+author: "Léa ROGUE"
+date: "2026-03-02"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+---
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+
+# Load libraries
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(ComplexHeatmap)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(colorRamp2)
+library(plotly)
+library(ggpubr)
+library(WGCNA)
+```
+
+
+```{r}
+# Function to calculate Z scores
+calculate_z_scores <- function(df_input, col) {
+  # Exclude col PROBEID SYMBOL and CTA
+  data_values <- df_input[, -c(col)]
+
+  # Calculate Z-scores
+  z_scores_row <- t(scale(t(data_values)))
+
+  # Add columns
+  df_z_scores <- cbind(df_input[, c(col)], z_scores_row)
+
+  # Return df
+  return(df_z_scores)
+}
+```
+
+
+
+# Load and prepare data
+```{r}
+# Read immunogenicity table
+df_immg <- read.table("../data/peptide_table_immg_pred.tsv", sep = "\t", header = T)
+df_immg <- df_immg[df_immg$allele %in% "HLA-A*02:01",]
+
+# Read CTA peptides
+df_cta_pep <- read.table("../results/peptides_CTA_uniques_jj_ch_iedb.tsv", sep = "\t", header = T)
+colnames(df_cta_pep) <- c("Gene", "peptide")
+df_immg_genes <- merge(df_immg, df_cta_pep, by = "peptide", all.x = T)
+
+# Prepare scores df
+df_gene_score <- df_immg_genes %>%
+  group_by(Gene) %>%
+  summarise(
+    mean_score = mean(immunogenicity.score, na.rm = TRUE),
+    sum_score = sum(immunogenicity.score, na.rm = TRUE),
+    n_peptides = n()) %>%
+  arrange(desc(sum_score))
+
+# Read CTAs
+l_cta <- read.table("../data/CTA_list_clean.txt", header = F)$V1
+
+# Matrix with intensities and information on immune signature and CTA
+df_CTA_immune_whole_clean_avg_102 <- read.table("../results/whole_gene_int_CTA_sign_imm_clean.tsv", sep = "\t", header = TRUE, check.names = FALSE, row.names = 1)
+
+# Metadata
+df_metadata <- read.table("../results/metadata.tsv", sep = "\t", header = TRUE, check.names = FALSE, dec = ",")
+
+# Conventional CHS metadata
+df_metadata_conv <- df_metadata[df_metadata$Histology != "N/A" & df_metadata$Histology != "benign" & df_metadata$Histology != "dedifferentiated",]
+df_metadata_surv_conv <- df_metadata_conv[, c("Patient", "OS.delay", "OS.event")]
+df_metadata_surv_conv <- na.omit(df_metadata_surv_conv)
+
+# Matrix for conventional patients with survival metadata
+df_CTA_immune_whole_clean_avg_63 <- df_CTA_immune_whole_clean_avg_102[, c("Signature", "CTA", colnames(df_CTA_immune_whole_clean_avg_102)[colnames(df_CTA_immune_whole_clean_avg_102) %in% df_metadata_surv_conv$Patient])]
+df_z_scores_63 <- calculate_z_scores(df_CTA_immune_whole_clean_avg_63, c(1,2))
+
+# Df for immune signatures
+df_complete <- read.table("../results/matrix_complete_intensities.tsv", sep = "\t", header = TRUE, check.names = FALSE)
+df_complete_63 <- df_complete[, c("Signature", "CTA", colnames(df_complete)[colnames(df_complete) %in% df_metadata_surv_conv$Patient])]
+
+# Average the expression between same immune cells types
+# Take rows with immune cells signature from normalized data
+df_avg_immune_sign_63 <- df_complete_63 %>%
+  filter(Signature != "NA")
+
+# Group by signature and calculate mean of expression values
+df_avg_immune_sign_final_63 <- as.data.frame(df_avg_immune_sign_63 %>%
+  dplyr::select(-c(CTA)) %>% 
+  group_by(Signature) %>%
+  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE))))
+rownames(df_avg_immune_sign_final_63) <- df_avg_immune_sign_final_63$Signature
+df_avg_immune_sign_final_63 <- df_avg_immune_sign_final_63[,-1]
+
+# Compute z scores
+df_imm_z_scores_63 <- t(scale(t(df_avg_immune_sign_final_63)))
+
+# read scatter data
+df_scatter_hr <- read.table("../results/table_scatter_63_complete.tsv", sep = "\t", header = T)
+```
+
+# I. Correlation heatmap
+```{r, fig.height=10, fig.width=10, fig.cap="Pearson correlation matrix between all CTAs and conventional chondrosarcomas (n = 63)"}
+data <- subset(df_z_scores_63, df_z_scores_63$CTA == "CTA")
+data <- data[, -c(1,2)]
+
+# Pearson correlation and p-value compute
+cor_matrix <- cor(t(df_imm_z_scores_63), t(data), method = "pearson")
+cor_pval <- corPvalueStudent(cor_matrix, 63)
+
+# Significant p-val
+pval_signif <- cor_pval < 0.05
+
+# Heatmap
+colors <- colorRampPalette(c("#75E05A", "white", "#EA4343"))(100)
+heatmap_all_cta_corr_63 <- Heatmap(
+  as.matrix(cor_matrix),
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  cluster_column_slices = TRUE,
+  clustering_distance_columns = "euclidean",
+  clustering_method_columns = "complete",
+  show_column_dend = TRUE,
+  column_names_gp = gpar(fontsize = 2),
+  row_names_gp = gpar(fontsize = 5),
+  col = colorRamp2(seq(-1, 1, length.out = 100), colors),
+  heatmap_legend_param = list(title = "Pearson coefficient"),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+          if (pval_signif[i, j]) {
+            grid.text("*", x, y, gp = gpar(fontsize = 5, col = "black"))
+          }
+        })
+
+#pdf("../results/correlation_matrix_all_CTA_63_immg.pdf", height = 6, width = 40)
+heatmap_all_cta_corr_63 <- draw(heatmap_all_cta_corr_63)
+#dev.off()
+```
+\newpage
+```{r}
+# Store clusters HOT and COLD
+cta_clust <- column_order(heatmap_all_cta_corr_63)
+
+# Create table with cta
+df_immp <- data.frame(
+  col_clusters = c(rep("Hot tumor CTAs", length(cta_clust[1:402])), 
+              rep("Cold tumor CTAs", length(cta_clust[403:841]))),
+  Gene = c(rownames(data)[cta_clust[1:402]],
+            rownames(data)[cta_clust[403:841]]))
+
+# Save
+#write.table(df_immp, file = "../results/clusters_cta_pearson_63.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+\newpage
+
+
+# II. Scatter plot
+```{r, fig.cap="Scatter plot with immunophenotype data"}
+# Merge immunophenotype and immunogenicity
+df_immg_immp <- merge(df_gene_score, df_immp, by = "Gene", all = T)
+df_immg_immp <- df_immg_immp %>% 
+  filter(!is.na(col_clusters))
+
+# Prepare data for scatter
+df_scatter_h_c <- merge(df_scatter_hr, df_immg_immp, by.x = "SYMBOL", by.y = "Gene", all.x = T)
+df_scatter_h_c$HR <- ifelse(is.na(df_scatter_h_c$HR), 0.1, df_scatter_h_c$HR)
+
+# Plot
+p <- ggplot(df_scatter_h_c,
+       aes(x = Mean_expression_tissues, 
+           y = Intensity, 
+           color = Cluster,
+           size = HR,
+           shape = col_clusters)) +
+       geom_point(alpha = 0.8) +
+       geom_hline(yintercept = median(df_scatter_h_c$Intensity), linetype = "dashed", color = "black") +
+       annotate("text", x = max(df_scatter_h_c$Mean_expression_tissues), y = median(df_scatter_h_c$Intensity) + 0.3, label = "Median\nexpression", size = 2.5) +
+       geom_vline(xintercept = quantile(df_scatter_h_c$Mean_expression_tissues, 0.75), linetype = "dashed", color = "black") +
+       annotate("text", x = quantile(df_scatter_h_c$Mean_expression_tissues, 0.75) + 3.5, y = max(df_scatter_h_c$Intensity) + 0.2, label = "75th percentile", size = 2.5) +
+       scale_size_continuous(range = c(1, 4), breaks = c(min(df_scatter_hr[!is.na(df_scatter_hr$Cluster), "HR"]), 1, max(df_scatter_hr$HR, na.rm = TRUE)), labels = ~ round(.x, 2)) +
+       scale_shape_manual(values = c("Cold tumor CTAs" = 15, "Hot tumor CTAs" = 16)) +
+       scale_color_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C"), na.value = "#b0b0b0") +
+       theme_minimal() +
+       scale_x_log10() +
+       labs(x = "CTAs expression in normal tissues (Log10 TPM mean)", 
+            y = "CTAs expression in CHS (mean intensities)", 
+            shape = "",
+            size = "Sized according to HR\n(only for colored points)",
+            color = "CTAs cluster")
+p
+#ggsave("../results/scatter_plot.svg", plot = p,  width = 20, height = 15, units = "cm")
+```
+
+\newpage
+
+# III. Bar plot of CTAs number per cluster with stats
+```{r, fig.cap="Bar plot of CTAs number per cluster with stats"}
+# Count
+df_clean <- df_scatter_h_c %>%
+  filter(!is.na(Cluster))
+df_count <- df_clean %>%
+  count(Cluster, col_clusters)
+
+# Create table
+tab <- df_clean %>%
+  count(Cluster, col_clusters) %>%
+  pivot_wider(names_from = col_clusters,
+              values_from = n,
+              values_fill = 0)
+
+# Fisher pairwise test
+pairwise_test <- function(c1, c2, data){
+  sub <- data %>% filter(Cluster %in% c(c1, c2))
+  mat <- as.matrix(sub[ , c("Hot tumor CTAs", "Cold tumor CTAs")])
+  rownames(mat) <- sub$Cluster
+  fisher.test(mat)$p.value
+}
+
+pairs <- combn(unique(tab$Cluster), 2, simplify = FALSE)
+
+results <- data.frame(
+  group1 = sapply(pairs, function(x) x[1]),
+  group2 = sapply(pairs, function(x) x[2]),
+  p = sapply(pairs, function(x) pairwise_test(x[1], x[2], tab))
+)
+
+# correction multiple tests
+results$p_adj <- p.adjust(results$p, method = "BH")
+
+
+# Add stars
+results$p.adj.signif <- cut(results$p_adj,
+                           breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                           labels = c("***", "**", "*", "ns"))
+
+# Annotation
+totals <- df_count %>%
+  group_by(Cluster) %>%
+  summarise(total = sum(n))
+
+ymax <- max(totals$total)
+
+results$y.position <- c(ymax*1.05,
+                        ymax*1.15,
+                        ymax*1.25)
+
+# Barplot
+p <- ggplot(df_count,
+            aes(x = Cluster, y = n, fill = col_clusters)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.4) +
+  scale_fill_manual(values = c("Hot tumor CTAs" = "#9e9e9eff", "Cold tumor CTAs" = "#625f6aff")) +
+  labs(x = "Cluster",
+       y = "CTAs number",
+       fill = "") +
+  theme_classic()
+
+# Add stars on the plot
+plot_final <- p +
+  stat_pvalue_manual(results,
+                     label = "p.adj.signif",
+                     xmin = "group1",
+                     xmax = "group2",
+                     y.position = "y.position",
+                     tip.length = 0.01,
+                     size = 6) +
+  annotate("text",
+           x = Inf,
+           y = Inf,
+           label = "* p < 0.05\n** p < 0.01\n*** p < 0.001",
+           hjust = 1.1,
+           vjust = 1.1,
+           size = 4)
+plot_final
+#ggsave("../results/barplot.svg", plot = plot_final,  width = 10, height = 10, units = "cm")
+```
+
+
+
+
+
+

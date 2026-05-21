@@ -1,0 +1,214 @@
+---
+title: "Immunogenicity and expression - Fig6"
+author: "Léa ROGUE"
+date: "2026-03-16"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+---
+
+```{r, echo = FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+
+# Load libraries
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggsignif)
+```
+
+# Load and prepare data
+```{r}
+# Read immunogenicity table
+df_immg <- read.table("../data/peptide_table_immg_pred.tsv", sep = "\t", header = T)
+df_immg <- df_immg[df_immg$allele %in% "HLA-A*02:01",]
+
+# Read CTA peptides
+df_cta_pep <- read.table("../results/peptides_CTA_uniques_jj_ch_iedb.tsv", sep = "\t", header = T)
+colnames(df_cta_pep) <- c("Gene", "peptide")
+df_immg_genes <- merge(df_immg, df_cta_pep, by = "peptide", all.x = T)
+
+# Prepare scores df
+df_gene_score <- df_immg_genes %>%
+  group_by(Gene) %>%
+  summarise(
+    mean_score = mean(immunogenicity.score, na.rm = TRUE),
+    sum_score = sum(immunogenicity.score, na.rm = TRUE),
+    n_peptides = n()) %>%
+  arrange(desc(sum_score))
+
+# Read CTAs
+l_cta <- read.table("../data/CTA_list_clean.txt", header = F)$V1
+
+# Read immunophenotype data
+df_immp <- read.table("../results/clusters_cta_pearson_63.tsv", sep = "\t", header = T)
+colnames(df_immp) <- c("Cluster", "Gene")
+
+# Merge immunogenocity scores with immunophenotype
+df_immg_immp <- merge(df_gene_score, df_immp, by = "Gene", all.x = T)
+
+# Cluster data
+df_clust <- read.table("../results/clusters_cta_signif_conv_indiv.tsv", sep = "\t", header = T)
+
+# Mean expression data
+df_mean_expr_norm <- read.table("../results/table_scatter_63_complete.tsv", sep = "\t", header = T)
+```
+
+
+# I. Boxplot immunogenicity by hot and cold clusters
+```{r}
+# Select CTAs with peptides
+df_immg_immp_h_c <- df_immg_immp[!is.na(df_immg_immp$Cluster) & !is.na(df_immg_immp$mean_score), ]
+
+# Verify normality
+shapiro.test(df_immg_immp_h_c$mean_score)
+shapiro.test(df_immg_immp_h_c$mean_score)
+
+# Wilcoxon test
+wilcox.test(mean_score ~ Cluster, data = df_immg_immp_h_c)
+```
+
+```{r, fig.cap="Boxplot immunogenicity by hot and cold clusters"}
+# Plot
+df_immg_immp_h_c$Cluster <- factor(df_immg_immp_h_c$Cluster, levels = c("Hot tumor CTAs", "Cold tumor CTAs"))
+p <- ggplot(df_immg_immp_h_c, aes(x = Cluster, y = mean_score, fill = Cluster)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.2) +  
+  geom_jitter(width = 0.12, size = 0.5, alpha = 0.8) +
+  scale_fill_manual(values = c("Cold tumor CTAs" = "#625f6aff", "Hot tumor CTAs" = "#9e9e9eff")) +
+  labs(x = "", y = "Immunogenicity (mean score)") +
+  stat_compare_means(comparisons = list(c("Cold tumor CTAs", "Hot tumor CTAs"))) +
+  theme_classic()
+p
+#ggsave("../results/boxplot_cold_hot.svg", plot = p, width = 15, height = 10, units = "cm")
+```
+\newpage
+
+# II. Boxplot immunogenicity by survival CTAs clusters
+```{r}
+# Rename col and rename clusters
+colnames(df_clust) <- c("Cluster_surv", "Gene")
+
+# Merge
+df_immg_immp_clust <- merge(df_immg_immp, df_clust, by = "Gene")
+df_immg_immp_clust$Cluster_surv <- as.character(df_immg_immp_clust$Cluster_surv)
+```
+
+
+```{r, fig.cap="Boxplot immunogenicity by survival CTAs clusters"}
+# Pairwise wilcoxon test with BH correction
+pwt <- pairwise.wilcox.test(
+  df_immg_immp_clust$mean_score,
+  df_immg_immp_clust$Cluster_surv,
+  p.adjust.method = "BH"
+)
+
+# Extract adjusted p-values
+p_ab <- pwt$p.value["B", "A"]
+p_ac <- pwt$p.value["C", "A"]
+p_bc <- pwt$p.value["C", "B"]
+
+# Convert into stars
+signif_stars <- function(p) {
+  if (p <= 0.0001) "****"
+  else if (p <= 0.001) "***"
+  else if (p <= 0.01) "**"
+  else if (p <= 0.05) "*"
+  else "ns"
+}
+
+# Plot
+p <- ggplot(df_immg_immp_clust, aes(x = Cluster_surv, y = mean_score, fill = Cluster_surv)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.3) +
+  geom_jitter(width = 0.12, size = 1, alpha = 0.8) +
+  labs(x = "CTAs cluster", y = "Immunogenicity (mean score)") +
+  scale_fill_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C")) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  geom_signif(comparisons = list(c("A", "B"), c("A", "C"), c("B", "C")),
+              annotations = c(signif_stars(p_ab), signif_stars(p_ac), signif_stars(p_bc)),
+              step_increase = 0.1,
+              tip_length = 0.02)
+p
+#ggsave("../results/boxplot_clust_a_b_c.svg", plot = p, width = 15, height = 10, units = "cm")
+```
+\newpage
+
+# III. Correlation normal tissues and mean score
+```{r, fig.cap="Correlation plot"}
+# Merge
+df_mean_expr_norm$Gene <- df_mean_expr_norm$SYMBOL
+df_corr_means <- merge(df_immg_immp_clust, df_mean_expr_norm, by = "Gene")
+df_corr_means <- na.omit(df_corr_means)
+rownames(df_corr_means) <- df_corr_means$Gene
+
+# Spearman correlation
+res <- cor.test(df_corr_means$mean_score,
+                df_corr_means$Mean_expression_tissues,
+                method = "spearman")
+
+# Prepare label for the plot
+r_value <- round(res$estimate, 7)
+p_value <- round(res$p.value, 5)
+label_text <- paste0("r = ", r_value, "\np = ", p_value)
+
+# Plot
+p <- ggplot(df_corr_means, aes(x = Mean_expression_tissues, y = mean_score, color = Cluster_surv)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_color_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C")) +
+  labs(x = "CTAs expression in normal tissues (Log10 TPM mean)", y = "Immunogneicity (mean score)", color = "CTAs cluster") +
+  annotate("text", 
+           x = max(df_corr_means$Mean_expression_tissues) * 0.04,
+           y = max(df_corr_means$mean_score) * 0.9,
+           label = label_text,
+           hjust = 0) +
+  scale_x_log10() +
+  theme_minimal()
+p
+#ggsave("../results/plot_linear_regression_spearman_clusts.svg", plot = p)
+```
+\newpage
+
+
+```{r, fig.cap="Barplot CTA expression per cluster"}
+# Select data
+df_clean <- df_mean_expr_norm %>%
+  filter(!is.na(Cluster)) %>%
+  mutate(TPM_log2 = log2(Mean_expression_tissues + 1))
+
+# Pairwise comparisons
+comparisons <- combn(unique(df_clean$Cluster), 2, simplify = FALSE)
+
+# Plot
+p <- ggplot(df_clean, aes(x = Cluster, y = TPM_log2, fill = Cluster)) +
+  scale_fill_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C")) +
+  stat_summary(fun = mean, geom = "bar", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  theme_classic() +
+  labs(x = "CTAs cluster", y = "CTAs expression in normal\ntissues (Log2(TPM + 1))")
+
+# Add tests
+plot_final <- p +
+  stat_compare_means(comparisons = comparisons,
+                     method = "t.test",
+                     label = "p.signif",
+                     step.increase = 0.1)
+plot_final
+#ggsave("../results/barplot.svg", plot = plot_final,  width = 10, height = 10, units = "cm")
+```

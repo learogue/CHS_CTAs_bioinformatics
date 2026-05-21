@@ -1,0 +1,377 @@
+---
+title: "Cell lines immunopeptidome analysis - Fig2 - Fig S2"
+author: "Léa ROGUE"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+date: "2026-01-30"
+---
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+# Load packages
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(ggplot2)
+library(ggseqlogo)
+library(reshape2)
+library(UniProt.ws)
+library(dplyr)
+library(tidyr)
+library(VennDiagram)
+```
+
+
+# Load data
+```{r}
+# Cell lines immunopeptidomic
+df_ch_mhc1 <- read.table("../data/immunopep_CH2879.tsv", sep = "\t", header = T)
+df_jj_mhc1 <- read.table("../data/immunopep_JJ012.tsv", sep = "\t", header = T)
+
+# Read IEDB file
+df_iedb_mhc1 <- read.csv("../data/epitope_table_export_human_MHC_I.tsv", header = T, sep = "\t")
+
+# CTA
+l_CTA <- read.table("../data/CTA_list_clean.txt")$V1
+
+# Read and prepare strong binders files
+df_sb_jj <- read.table("../data/table_res_netmhc_all_sb_JJ012.tsv", sep = "\t", header = T)
+df_sb_jj <- df_sb_jj[, c("Allele", "Peptide")]
+df_sb_ch <- read.table("../data/table_res_netmhc_all_sb_CH2879.tsv", sep = "\t", header = T)
+df_sb_ch <- df_sb_ch[, c("Allele", "Peptide")]
+
+# Read RNAseq data
+df_ch2879_tpm <- read.table("../results/CH2879_fpkm_tpm.tsv", sep = "\t", header = T)
+df_jj012_tpm <- read.table("../results/JJ012_fpkm_tpm.tsv", sep = "\t", header = T)
+
+# Microarray data
+df_chs <- read.table("../results/whole_gene_int_CTA_sign_imm_clean.tsv", header = T, sep = "\t", row.names = 1)
+df_chs <- df_chs[, -c(1,2)]
+df_metadata <- read.table("../results/metadata.tsv", header = T, sep = "\t")
+```
+
+
+# I. Sequence length histogram
+
+```{r, fig.cap="Peptides length histogram (MHC-I)"}
+# Identify categories
+seq_unique_ch <- setdiff(df_ch_mhc1$Seq, df_jj_mhc1$Seq)
+seq_unique_jj <- setdiff(df_jj_mhc1$Seq, df_ch_mhc1$Seq)
+seq_common <- intersect(df_ch_mhc1$Seq, df_jj_mhc1$Seq)
+
+# Add category column
+df_ch_mhc1$Category <- ifelse(df_ch_mhc1$Seq %in% seq_common, "Common peptides",
+                         ifelse(df_ch_mhc1$Seq %in% seq_unique_ch, "CH2879", NA))
+df_jj_mhc1$Category <- ifelse(df_jj_mhc1$Seq %in% seq_common, "Common peptides",
+                         ifelse(df_jj_mhc1$Seq %in% seq_unique_jj, "JJ012", NA))
+
+# Merge
+pep_all <- bind_rows(df_ch_mhc1, df_jj_mhc1)
+
+# Order colors
+pep_all$Category <- factor(pep_all$Category, levels = c("CH2879", "JJ012", "Common peptides"))
+
+# Histogram
+#svg("../results/barplot_length_common.svg")
+ggplot(pep_all, aes(x = seq_len, fill = Category)) +
+  geom_histogram(binwidth = 1, position = "stack") +
+  scale_fill_manual(values = c("CH2879" = "#000000ff",
+                               "JJ012" = "#625f6aff",
+                               "Common peptides" = "#9e9e9eff")) +
+  labs(x = "Peptide length (AA)", y = "Peptide number", fill = "Cell lines") +
+  theme_minimal()
+#dev.off()
+```
+
+# I. Venn diagram MHCI
+```{r}
+# IEDB pep
+df_pep_mhc1 <- df_iedb_mhc1[, c("Name", "Source.Molecule.IRI", "Molecule.Parent.IRI")]
+pep_iedb_mhc1 <- unique(df_pep_mhc1$Name)
+pep_iedb_mhc1 <- gsub(" .*|\\+.*", "", pep_iedb_mhc1)
+pep_iedb_mhc1 <- unique(pep_iedb_mhc1)
+
+# Filter on length
+df_jj_mhc1 <- df_jj_mhc1[df_jj_mhc1$seq_len >= 8 & df_jj_mhc1$seq_len <= 11,]
+df_ch_mhc1 <- df_ch_mhc1[df_ch_mhc1$seq_len >= 8 & df_ch_mhc1$seq_len <= 11,]
+
+# Delete known seq
+new_pep_ch_mhc1 <- setdiff(df_ch_mhc1$Seq, pep_iedb_mhc1)
+grep_ch <- sapply(new_pep_ch_mhc1, function(x) any(grepl(x, pep_iedb_mhc1)))
+new_pep_ch_mhc1 <- new_pep_ch_mhc1[!new_pep_ch_mhc1 %in% names(grep_ch)[grep_ch]]
+
+# Select new pep JJ
+new_pep_jj_mhc1 <- setdiff(df_jj_mhc1$Seq, pep_iedb_mhc1)
+grep_jj <- sapply(new_pep_jj_mhc1, function(x) any(grepl(x, pep_iedb_mhc1)))
+new_pep_jj_mhc1 <- new_pep_jj_mhc1[!new_pep_jj_mhc1 %in% names(grep_jj)[grep_jj]]
+
+# Clean IEDB pep
+pep_iedb_extended_ch <- unique(c(pep_iedb_mhc1, names(grep_ch)[grep_ch]))
+pep_iedb_extended_jj <- unique(c(pep_iedb_mhc1, names(grep_jj)[grep_jj]))
+```
+
+
+## JJ012
+```{r, fig.cap="Venn plot JJ012 (MHCI)"}
+# Venn diagram
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_jj),
+  area2 = length(df_jj_mhc1$Seq),
+  cross.area = length(df_jj_mhc1$Seq) - length(new_pep_jj_mhc1), 
+  category = c("IEDB", "JJ012"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+\newpage
+
+## CH2879
+```{r, fig.cap="Venn plot CH2879 (MHCI)"}
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_ch),
+  area2 = length(df_ch_mhc1$Seq),
+  cross.area = length(df_ch_mhc1$Seq) - length(new_pep_ch_mhc1), 
+  category = c("IEDB", "CH2879"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+\newpage
+
+
+# II. Proportion of strong binders peptides per HLA-type
+## JJ012
+```{r, fig.cap="Histogram of strong binders peptides per HLA-type (JJ012)"}
+# Prepare
+df_sb_jj <- df_sb_jj[df_sb_jj$Peptide %in% df_jj_mhc1$Seq,]
+df_sb_jj$Category <- ifelse(df_sb_jj$Peptide %in% new_pep_jj_mhc1, "Novel peptide", "Known peptide")
+df_sb_jj <- df_sb_jj %>% distinct(Peptide, .keep_all = TRUE)
+
+# Compute percentages
+df_percent <- df_sb_jj %>%
+  group_by(Allele, Category) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(percent = 100 * n / sum(n))
+
+# Filter on HLA types
+hla_jj <- c("HLA-A0201", "HLA-B4402", "HLA-C0501")
+df_hla <- df_percent %>%
+  filter(Allele %in% hla_jj)
+
+# Plot
+#svg("../results/barplot_category_pep_jj.svg")
+ggplot(df_hla, aes(y = Allele, x = percent, fill = Category)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  scale_fill_manual(values = c("Known peptide" = "#2C7BB6", "Novel peptide" = "#ff7f0e")) +
+  labs(x = "% of JJ012 peptides (strong binders) per HLA type",
+       y = NULL,
+       fill = NULL) +
+  theme_classic()
+#dev.off()
+```
+\newpage
+
+## CH2879
+```{r, fig.cap="Histogram of strong binders peptides per HLA-type (CH2879)"}
+# Prepare
+df_sb_ch <- df_sb_ch[df_sb_ch$Peptide %in% df_ch_mhc1$Seq,]
+df_sb_ch$Category <- ifelse(df_sb_ch$Peptide %in% new_pep_ch_mhc1, "Novel peptide", "Known peptide")
+df_sb_ch <- df_sb_ch %>% distinct(Peptide, .keep_all = TRUE)
+
+# Compute percentages
+df_percent <- df_sb_ch %>%
+  group_by(Allele, Category) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(percent = 100 * n / sum(n))
+
+# Filter on HLA types
+hla_ch <- c("HLA-A0101", "HLA-B0702", "HLA-C0702")
+df_hla <- df_percent %>%
+  filter(Allele %in% hla_ch)
+
+# Plot
+#svg("../results/barplot_category_pep_ch.svg")
+ggplot(df_hla, aes(y = Allele, x = percent, fill = Category)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  scale_fill_manual(values = c("Known peptide" = "#2C7BB6", "Novel peptide" = "#ff7f0e")) +
+  labs(
+    x = "% of CH2879 peptides (strong binders) per HLA type",
+    y = NULL,
+    fill = "Category") +
+  theme_classic()
+#dev.off()
+```
+\newpage
+
+# III. Sequence logo for 9-mer peptides for SB per HLA type
+## JJ012
+```{r, fig.cap="Sequence logo for SB per HLA type (JJ012)"}
+# Take peptide length = 9 AA
+df <- df_sb_jj %>%
+  filter(Allele %in% hla_jj) %>%
+  filter(nchar(Peptide) == 9)
+seqs_by_hla <- split(df$Peptide, df$Allele)
+
+# Count peptides per group
+counts <- lengths(seqs_by_hla)
+
+# Rename to have the number per HLA
+names(seqs_by_hla) <- paste0(names(seqs_by_hla), " (n=", counts, ")")
+
+#svg("../results/seq_logos_jj.svg")
+ggseqlogo(seqs_by_hla, ncol = 3, seq_type = "aa") + 
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_blank()) +
+  xlab("Position") +
+  ylab("Information (bits)")
+#dev.off()
+```
+\newpage
+
+## CH2879
+```{r, fig.cap="Sequence logo for SB per HLA type (CH2879)"}
+# Take peptide length = 9 AA
+df <- df_sb_ch %>%
+  filter(Allele %in% hla_ch) %>%
+  filter(nchar(Peptide) == 9)
+seqs_by_hla <- split(df$Peptide, df$Allele)
+
+# Count peptides per group
+counts <- lengths(seqs_by_hla)
+
+# Rename to have the number per HLA
+names(seqs_by_hla) <- paste0(names(seqs_by_hla), " (n=", counts, ")")
+
+#svg("../results/seq_logos_ch.svg")
+ggseqlogo(seqs_by_hla, ncol = 3, seq_type = "aa") + 
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_blank()) +
+  xlab("Position") +
+  ylab("Information (bits)")
+#dev.off()
+```
+
+\newpage
+
+
+# IV. FigS2, correlation between RNA from cell lines and patients (microarray)
+
+```{r}
+# Clean data
+df_ch2879_tpm <- df_ch2879_tpm[, c("Gene_ID", "Gene_Name", "TPM")]
+df_jj012_tpm  <- df_jj012_tpm[,  c("Gene_ID", "Gene_Name", "TPM")]
+
+# Rename
+colnames(df_ch2879_tpm)[3] <- "TPM_CH2879"
+colnames(df_jj012_tpm)[3]  <- "TPM_JJ012"
+
+# Merge
+df_merge <- merge(df_ch2879_tpm, df_jj012_tpm, by = c("Gene_ID", "Gene_Name"), all = TRUE)
+
+df_all <- df_merge[!df_merge$Gene_ID %in% c("ENSG00000233098", "ENSG00000291074", "ENSG00000293247", "ENSG00000293226"), ]
+
+# Take CTAs
+df_cta <- df_all[df_all$Gene_Name %in% l_CTA,]
+rownames(df_cta) <- df_cta$Gene_Name
+df_cta <- df_cta[, c(3,4)]
+```
+
+
+```{r}
+# Select common genes
+common_CTA <- intersect(rownames(df_cta), rownames(df_chs))
+common_CTA <- common_CTA[common_CTA %in% l_CTA]
+df_cells_CTA <- df_cta[common_CTA, c("TPM_CH2879", "TPM_JJ012")]
+df_chs_CTA <- df_chs[common_CTA, ]
+
+# Take corresponding grades
+df_chs_CTA_g2 <- df_chs[common_CTA, colnames(df_chs) %in% df_metadata$Patient[df_metadata$Histology == "G2"]]
+df_chs_CTA_g3 <- df_chs[common_CTA, colnames(df_chs) %in% df_metadata$Patient[df_metadata$Histology == "G3"]]
+
+# Compute means
+chs_mean_CTA_g2 <- rowMeans(df_chs_CTA_g2)
+chs_mean_CTA_g3 <- rowMeans(df_chs_CTA_g3)
+
+# Log2 transformation
+df_cells_log2_CTA <- log2(df_cells_CTA + 1)
+```
+
+```{r}
+# Correlation CH2879 vs CHS (CTA)
+cor_CH2879_CTA <- cor.test(df_cells_log2_CTA$TPM_CH2879, chs_mean_CTA_g3, method = "spearman")
+
+# Correlation JJ012 vs CHS (CTA)
+cor_JJ012_CTA <- cor.test(df_cells_log2_CTA$TPM_JJ012, chs_mean_CTA_g2, method = "spearman")
+
+# Results
+cor_CH2879_CTA$estimate
+cor_CH2879_CTA$p.value
+
+cor_JJ012_CTA$estimate
+cor_JJ012_CTA$p.value
+```
+
+
+```{r, fig.cap="Correlation plot between g3 and CH"}
+df_plot_CTA_CH2879 <- data.frame(
+  CHS = chs_mean_CTA_g3,
+  CH2879 = df_cells_log2_CTA$TPM_CH2879
+)
+
+# Plot
+p <- ggplot(df_plot_CTA_CH2879, aes(x = CHS, y = CH2879)) +
+  geom_point(size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  annotate("text", x = max(df_plot_CTA_CH2879$CHS), y = max(df_plot_CTA_CH2879$CH2879),
+           label = paste0("rho = ", round(cor_CH2879_CTA$estimate, 2),
+                          "\np = ", signif(cor_CH2879_CTA$p.value, 3)),
+           hjust = 1, vjust = 1, size = 4) +
+  ggtitle("Correlation CHS G3 vs CH2879 (CTA genes)") +
+  xlab("CHS grade 3 patients") +
+  ylab("CH2879 TPM (log2 + 1)") +
+  theme_classic()
+p
+```
+
+```{r, fig.cap="Correlation plot between g2 and JJ"}
+df_plot_CTA_JJ012 <- data.frame(
+  CHS = chs_mean_CTA_g2,
+  JJ012 = df_cells_log2_CTA$TPM_JJ012
+)
+
+# Plot
+p <- ggplot(df_plot_CTA_JJ012, aes(x = CHS, y = JJ012)) +
+  geom_point(size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  annotate("text", x = max(df_plot_CTA_JJ012$CHS), y = max(df_plot_CTA_JJ012$JJ012),
+           label = paste0("rho = ", round(cor_JJ012_CTA$estimate, 2),
+                          "\np = ", signif(cor_JJ012_CTA$p.value, 3)),
+           hjust = 1, vjust = 1, size = 4) +
+  ggtitle("Correlation CHS G2 vs JJ012 (CTA genes)") +
+  xlab("CHS grade 2 patients") +
+  ylab("JJ012 TPM (log2 + 1)") +
+  theme_classic()
+p
+```
+

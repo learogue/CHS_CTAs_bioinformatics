@@ -1,0 +1,599 @@
+---
+title: "Cell lines immunopeptidome analysis - Figure 3 - Supplementary file 1"
+author: "Léa ROGUE"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+date: "2026-02-02"
+---
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+# Load libraries and functions
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(grid)
+library(ggplot2)
+library(reshape2)
+library(UniProt.ws)
+library(dplyr)
+library(tidyr)
+library(VennDiagram)
+library(plotly)
+library(ggrepel)
+library(writexl)
+```
+
+```{r}
+map_genes_to_peptides <- function(df_summary) {
+  df_sep <- df_summary %>%
+    mutate(RowID = row_number()) %>%
+    separate_rows(Prot_accessions, sep = ";\\s*") %>%
+    mutate(Prot_accessions = sub("-\\d+$", "", Prot_accessions))
+
+  gene_mapping <- AnnotationDbi::select(
+    up,
+    keys    = unique(df_sep$Prot_accessions),
+    columns = "gene_primary",
+    keytype = "UniProtKB"
+  )
+
+  df_merged <- df_sep %>%
+    left_join(gene_mapping, by = c("Prot_accessions" = "Entry"))
+
+  df_final <- df_merged %>%
+    group_by(Seq) %>%
+    summarise(
+      Proteins = paste(unique(Prot_accessions), collapse = "; "),
+      Genes    = paste(unique(Gene.Names..primary.), collapse = "; "),
+      .groups = "drop"
+    )
+
+  df_summary %>%
+    left_join(df_final, by = "Seq") %>%
+    filter(Genes %in% l_CTA)
+}
+prep_df <- function(df){
+
+  df_summary <- df %>%
+    group_by(Prot_accessions) %>%
+    summarise(nb_sequences = n(), .groups = "drop")
+  
+  # Separate
+  df_sep <- df_summary %>%
+    mutate(RowID = row_number()) %>%
+    separate_rows(Prot_accessions, sep = ";\\s*") %>%
+    mutate(Prot_accessions = sub("-\\d+$", "", Prot_accessions))
+  
+  # Mapping UniProt -> Gene(s)
+  gene_mapping <- AnnotationDbi::select(
+    up,
+    keys    = df_sep$Prot_accessions,
+    columns = "gene_primary",
+    keytype = "UniProtKB"
+  )
+  
+  # Merge and reconstruct
+  df_final <- df_sep %>%
+    left_join(gene_mapping,
+              by = c("Prot_accessions" = "Entry")) %>%
+    group_by(RowID, nb_sequences) %>%
+    summarise(
+      Proteins = paste(unique(Prot_accessions), collapse = "; "),
+      Genes    = paste(unique(Gene.Names..primary.), collapse = "; "),
+      .groups = "drop"
+    )%>%
+    arrange(desc(nb_sequences))
+  
+  df_final <- df_final %>%
+    group_by(Genes) %>%
+    mutate(Genes_unique = if(n() > 1) paste0(Genes, "_", row_number()) else Genes) %>%
+    ungroup() %>%
+    mutate(Genes_unique = factor(Genes_unique, levels = Genes_unique)) %>%
+    arrange(desc(nb_sequences))
+  return(df_final)}
+```
+
+# Read data
+```{r}
+# Cell lines immunopeptidomic
+df_ch_mhc1 <- read.table("../data/immunopep_CH2879.tsv", sep = "\t", header = T)
+df_jj_mhc1 <- read.table("../data/immunopep_JJ012.tsv", sep = "\t", header = T)
+
+# Filter on length
+df_jj_mhc1 <- df_jj_mhc1[df_jj_mhc1$seq_len >= 8 & df_jj_mhc1$seq_len <= 11,]
+df_ch_mhc1 <- df_ch_mhc1[df_ch_mhc1$seq_len >= 8 & df_ch_mhc1$seq_len <= 11,]
+
+# CTA
+l_CTA <- read.table("../data/CTA_list_clean.txt")$V1
+
+# Read IEDB file
+df_iedb_mhc1 <- read.csv("../data/epitope_table_export_human_MHC_I.tsv", header = T, sep = "\t")
+df_pep_mhc1 <- df_iedb_mhc1[, c("Name", "Source.Molecule.IRI", "Molecule.Parent.IRI")]
+
+# IEDB
+pep_iedb_mhc1 <- unique(df_pep_mhc1$Name)
+pep_iedb_mhc1 <- gsub(" .*|\\+.*", "", pep_iedb_mhc1)
+
+# Read scatter data from Fig1E
+df_scatter_hr <- read.table("../results/table_scatter_63_complete.tsv", sep = "\t", header = T)
+
+# Read and prepare strong binders files
+df_aff_jj <- read.table("../data/table_res_netmhc_all_JJ012.tsv", sep = "\t", header = T)
+df_aff_ch <- read.table("../data/table_res_netmhc_all_CH2879.tsv", sep = "\t", header = T)
+```
+
+
+# I. Venn diagram with CTAs
+```{r}
+# CTA iedb
+df_iedb_mhc1$ID <- gsub("http://www.uniprot.org/uniprot/", "", df_iedb_mhc1$Molecule.Parent.IRI)
+df_iedb_mhc1$ID <- sub("-.*", "", df_iedb_mhc1$ID)
+
+# Transform ID in gene name
+up <- UniProt.ws(taxId = 9606)
+gene_mapping <- AnnotationDbi::select(
+  up,
+  keys = unique(df_iedb_mhc1$ID[df_iedb_mhc1$ID != ""]) ,
+  columns = "gene_primary",
+  keytype = "UniProtKB"
+)
+colnames(gene_mapping) <- c("From", "ID", "Gene.Names..primary.")
+df_iedb_mhc1_name <- merge(df_iedb_mhc1, gene_mapping, by.x = "ID", all.x = TRUE)
+
+# Select peptides from CTAs of IEDB
+df_iedb_mhc1_cta <- df_iedb_mhc1_name[df_iedb_mhc1_name$Gene.Names..primary. %in% l_CTA, ]
+```
+
+
+```{r}
+# Take CTAs from peptides in cell lines
+df_final_pep_jj <- map_genes_to_peptides(df_jj_mhc1)
+df_final_pep_ch <- map_genes_to_peptides(df_ch_mhc1)
+
+# Clean pep iedb
+pep_iedb_mhc1_cta <- unique(df_iedb_mhc1_cta$Name)
+pep_iedb_mhc1_cta <- gsub(" .*|\\+.*", "", pep_iedb_mhc1_cta)
+pep_iedb_mhc1_cta <- unique(pep_iedb_mhc1_cta)
+
+# Select new pep CH
+new_pep_ch_mhc1 <- setdiff(df_final_pep_ch$Seq, pep_iedb_mhc1_cta)
+grep_ch <- sapply(new_pep_ch_mhc1, function(x) any(grepl(x, pep_iedb_mhc1_cta)))
+new_pep_ch_mhc1 <- new_pep_ch_mhc1[!new_pep_ch_mhc1 %in% names(grep_ch)[grep_ch]]
+df_ch_new_pep_mhc1 <- df_ch_mhc1 %>%
+  filter(Seq %in% new_pep_ch_mhc1) %>%
+  distinct(Seq, .keep_all = TRUE)
+
+# Select new pep JJ
+new_pep_jj_mhc1 <- setdiff(df_final_pep_jj$Seq, pep_iedb_mhc1_cta)
+grep_jj <- sapply(new_pep_jj_mhc1, function(x) any(grepl(x, pep_iedb_mhc1_cta)))
+new_pep_jj_mhc1 <- new_pep_jj_mhc1[!new_pep_jj_mhc1 %in% names(grep_jj)[grep_jj]]
+
+df_jj_new_pep_mhc1 <- df_jj_mhc1 %>%
+  filter(Seq %in% new_pep_jj_mhc1) %>%
+  distinct(Seq, .keep_all = TRUE)
+
+# Clean IEDB pep
+pep_iedb_extended_ch <- unique(c(pep_iedb_mhc1_cta, names(grep_ch)[grep_ch]))
+pep_iedb_extended_jj <- unique(c(pep_iedb_mhc1_cta, names(grep_jj)[grep_jj]))
+```
+
+
+
+## JJ
+```{r, fig.cap="Venn plot JJ012 (MHCI)"}
+# Venn diagram
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_jj),
+  area2 = length(df_final_pep_jj$Seq),
+  cross.area = length(df_final_pep_jj$Seq) - length(new_pep_jj_mhc1), 
+  category = c("IEDB", "JJ012"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+\newpage
+
+## CH
+```{r, fig.cap="Venn plot CH2879 (MHCI)"}
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_ch),
+  area2 = length(df_final_pep_ch$Seq),
+  cross.area = length(df_final_pep_ch$Seq) - length(new_pep_ch_mhc1), 
+  category = c("IEDB", "CH2879"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+\newpage
+
+## Take CTA peptides for further analysis
+```{r}
+# IEDB
+df_iedb_cta <- df_iedb_mhc1_cta %>%
+  mutate(Peptide = gsub(" .*|\\+.*", "", Name)) %>%
+  filter(Peptide %in% pep_iedb_extended_ch | Peptide %in% pep_iedb_extended_jj) %>%
+  dplyr::select(Gene = Gene.Names..primary., Peptide) %>%
+  distinct(Gene, Peptide)
+
+# JJ012
+df_jj_cta <- df_final_pep_jj %>%
+  filter(Seq %in% df_final_pep_jj$Seq) %>%
+  dplyr::select(Gene = Genes, Peptide = Seq) %>%
+  distinct(Gene, Peptide)
+
+# CH2879
+df_ch_cta <- df_final_pep_ch %>%
+  dplyr::select(Gene = Genes, Peptide = Seq) %>%
+  distinct(Gene, Peptide)
+
+# Merge
+df_cta_all <- bind_rows(df_iedb_cta, df_jj_cta, df_ch_cta) %>%
+  distinct(Gene, Peptide) %>%
+  arrange(Gene, Peptide)
+
+fasta_lines <- c(rbind(paste0(">", seq_len(nrow(df_cta_all))), df_cta_all$Peptide))
+writeLines(fasta_lines, "../results/peptides_CTA_uniques_jj_ch_iedb.fa")
+write.table(df_cta_all, "../results/peptides_CTA_uniques_jj_ch_iedb.tsv", row.names = FALSE, sep = "\t", quote = FALSE)
+```
+
+
+
+
+# II. Histogram new peptides
+## CH2879
+```{r, fig.cap="CTA new peptides histogram (CH2879, MHCI)"}
+# Prepare data
+df_ch_new_pep_mhc1_plot <- prep_df(df_ch_new_pep_mhc1)
+
+# Plot
+df <- df_ch_new_pep_mhc1_plot[df_ch_new_pep_mhc1_plot$Genes %in% l_CTA,]
+p <- ggplot(df, aes(x = Genes_unique, y = nb_sequences)) +
+  geom_bar(stat = "identity", fill = "#ff7f0e") +
+  theme_minimal() +
+  labs(x = "Novel CTA proteins detected in CH2879",
+       y = "Number of novel peptides") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 5, color = "black"),
+    panel.grid.major = element_line(color = "grey80", linewidth = 0.1),
+    panel.grid.minor = element_line(color = "grey90", linewidth = 0.1)
+  )+
+  scale_x_discrete(labels = df$Genes) 
+p
+#ggsave("../results/histo_cta_ch.svg", plot = p, device = "svg", width = 4, height = 2)
+
+```
+
+\newpage
+
+
+## JJ012
+```{r, fig.cap="CTA new peptides histogram (JJ, MHCI)"}
+# Prepare data
+df_jj_new_pep_mhc1_plot <- prep_df(df_jj_new_pep_mhc1)
+
+# Plot
+df <- df_jj_new_pep_mhc1_plot[df_jj_new_pep_mhc1_plot$Genes %in% l_CTA,]
+p <- ggplot(df, aes(x = Genes_unique, y = nb_sequences)) +
+  geom_bar(stat = "identity", fill = "#ff7f0e") +
+  theme_minimal() +
+  labs(x = "Novel CTA proteins detected in JJ012",
+       y = "Number of novel peptides") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 5, color = "black"),
+    panel.grid.major = element_line(color = "grey80", linewidth = 0.1),
+    panel.grid.minor = element_line(color = "grey90", linewidth = 0.1)
+  ) +
+  scale_x_discrete(labels = df$Genes) 
+p
+#ggsave("../results/histo_cta_jj.svg", plot = p, device = "svg", width = 4.5, height = 2)
+```
+\newpage
+
+# III. Peptide ranks and scatter plots
+
+```{r}
+# Select dominant HLA type
+df_aff_ch_hlaa0101 <- df_aff_ch[df_aff_ch$Allele == "HLA-A0101" & df_aff_ch$Peptide %in% df_ch_mhc1$Seq, c("Peptide", "Affinity", "Rank")]
+
+df_aff_jj_hlaa0201 <- df_aff_jj[df_aff_jj$Allele == "HLA-A0201" & df_aff_jj$Peptide %in% df_jj_mhc1$Seq, c("Peptide", "Affinity", "Rank")]
+
+```
+
+## CH2879
+### Scatter plot from Fig1E
+```{r, fig.cap="Scatter plot from Fig1E (CH2879)"}
+# Add known pep
+pep_commons <- intersect(df_final_pep_ch$Seq, pep_iedb_mhc1_cta)
+
+# Reunite known peptides
+pep_commons2 <- names(grep_ch)[grep_ch]
+pep_known_all <- union(pep_commons, pep_commons2)
+
+# Dataframe with know CTA peptides and new peptides
+df_iedb_new_pep_ch <- df_ch_mhc1 %>%
+  filter(Seq %in% new_pep_ch_mhc1 | Seq %in% pep_known_all) %>%
+  distinct(Seq, .keep_all = TRUE)
+
+# Prepare df for scatter
+df_iedb_new_pep_ch_anno <- prep_df(df_iedb_new_pep_ch)
+df_merge <- merge(df_iedb_new_pep_ch, df_iedb_new_pep_ch_anno, by.x = "Prot_accessions", by.y = "Proteins")
+
+# Add rank information
+df_pep_ch_hlaa0101 <- df_merge[df_merge$Seq %in% df_aff_ch_hlaa0101$Peptide,]
+df_pep_ch_hlaa0101 <- merge(df_pep_ch_hlaa0101, df_aff_ch_hlaa0101, by.x = "Seq", by.y = "Peptide")
+df_scatter_ch <- merge(df_scatter_hr, df_pep_ch_hlaa0101, by.x = "SYMBOL", by.y = "Genes")
+
+# Plot
+df_scatter_ch <- df_scatter_ch %>%
+  mutate(Status = case_when(
+    Seq %in% new_pep_ch_mhc1 ~ "New",
+    Seq %in% pep_known_all   ~ "Known"))
+
+# Agregate per gene, if one is new => orange
+df_scatter_ch_gene <- df_scatter_ch %>%
+  group_by(SYMBOL, Mean_expression_tissues, Intensity, HR) %>%
+  summarise(
+    Status = ifelse(any(Status == "New"), "New", "Known"),
+    Rank = min(Rank),
+    .groups = "drop"
+  )
+
+# Labeling genes
+df_labels <- df_scatter_ch_gene %>%
+  filter(Mean_expression_tissues < quantile(df_scatter_hr$Mean_expression_tissues, 0.75),
+         Intensity > median(df_scatter_hr$Intensity)) %>%
+  mutate(is_sb = Rank <= 0.5)
+
+
+# For legends
+df_legend <- data.frame(
+  Mean_expression_tissues = c(NA, NA),
+  Intensity = c(NA, NA),
+  Status = c("Strong binders", "Others"))
+
+# Plot
+p <- ggplot(df_scatter_ch_gene,
+            aes(x = Mean_expression_tissues,
+                y = Intensity,
+                color = Status,
+                text = paste0("Gene: ", SYMBOL,
+                              "<br>Status: ", Status,
+                              "<br>Mean expression: ", round(Mean_expression_tissues, 3),
+                              "<br>Intensity: ", round(Intensity, 3),
+                              "<br>HR: ", round(HR, 3),
+                              "<br>Rank: ", round(Rank, 3)))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_point(
+    data = df_legend,
+    aes(x = Mean_expression_tissues, y = Intensity, color = Status),
+    size = 0, alpha = 0, inherit.aes = FALSE) +
+  scale_color_manual(
+  values = c("Known" = "#1f77b4",
+             "New" = "#ff7f0e",
+             "Strong binders" = "black",
+             "Others" = "black"),
+  labels = c("Known" = "Known peptides",
+             "New"  = "Novel peptides",
+             "Strong binders" = expression(bold("Strong binders (bold)")),
+             "Others" = "Others"),
+  breaks = c("Known", "New", "Strong binders", "Others")) +
+  guides(color = guide_legend(
+    override.aes = list(
+      size  = c(2, 2, 0, 0),
+      alpha = c(1, 1, 0, 0)))) +
+  scale_x_log10(breaks = c(0.001, 0.01, 0.1, 1, 10), labels = c("0.001", "0.01", "0.1", "1", "10")) +
+  geom_hline(yintercept = median(df_scatter_hr$Intensity), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_scatter_ch_gene$Mean_expression_tissues), y = median(df_scatter_hr$Intensity) - 0.2, label = "Median\nexpression", size = 2.5) +
+  geom_vline(xintercept = quantile(df_scatter_hr$Mean_expression_tissues, 0.75), linetype = "dashed", color = "black") +
+  annotate("text", x = quantile(df_scatter_hr$Mean_expression_tissues, 0.75) + 0.8, y = max(df_scatter_ch_gene$Intensity) + 0.2, label = "75th percentile", size = 2.5) +
+  geom_text_repel(
+    data = df_labels,
+    aes(label = SYMBOL,
+        fontface = ifelse(is_sb, "bold", "plain"),
+        size     = 3),
+    color         = "black",
+    max.overlaps  = 20,
+    box.padding   = 0.4,
+    segment.color = "black",
+    segment.size  = 0.3,
+    min.segment.length = 0) +
+  scale_size_identity() +
+  theme_minimal() +
+  labs(x = "CTAs expression in normal tissues (Log10 TPM mean)",
+       y = "CTAs expression in CHS (mean intensities)",
+       color = "CH2879 HLA-A*01:01\npeptides")
+p
+#ggplotly(p, tooltip = "text")
+#ggsave("../results/scatter_plot_ch.svg", plot = p,  width = 20, height = 15, units = "cm")
+```
+\newpage
+
+### Rank scatter plot
+```{r, fig.cap="Rank scatter plot (CH2879)"}
+# Count number of peptides per rank
+df_count <- df_scatter_ch %>%
+  ungroup() %>%
+  mutate(Status = as.character(Status)) %>%
+  group_by(Rank) %>%
+  summarise(
+    nb_pep = n(),
+    is_new = any(Status == "New"))
+
+# Scatter plot
+p <- ggplot(df_count, aes(x = nb_pep, y = Rank, color = is_new)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("FALSE" = "grey30", "TRUE" = "#ff7f0e"), 
+                     labels = c("FALSE" = "Known peptides", "TRUE" = "Novel peptides")) +
+  geom_hline(yintercept = c(0.5, 2), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 0.5 * 0.8, label = "Strong binders", hjust = 1, color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 2 * 0.8, label = "Weak binders", hjust = 1, color = "black") +
+  labs(x = "CH2879 HLA-A*01:01 peptides number", y = "%Rank", color = "Category") +
+  scale_y_log10(breaks = c(0.01, 0.1, 1, 10, 100), labels = c("0.01", "0.1", "1", "10", "100")) +
+  scale_x_continuous(breaks = seq(0, max(df_count$nb_pep), by = 2)) +
+  theme_minimal()
+p
+#ggsave("../results/scatter_ch_a01.svg", plot = p)
+```
+\newpage
+
+
+## JJ012
+### Scatter plot from Fig1E
+```{r, fig.cap="Scatter plot from Fig1E (JJ012)"}
+# Add known pep
+pep_commons <- intersect(df_final_pep_jj$Seq, pep_iedb_mhc1_cta)
+
+# Reunite known peptides
+pep_commons2 <- names(grep_jj)[grep_jj]
+pep_known_all <- union(pep_commons, pep_commons2)
+
+# Dataframe with know CTA peptides and new peptides
+df_iedb_new_pep_jj <- df_jj_mhc1 %>%
+  filter(Seq %in% new_pep_jj_mhc1 | Seq %in% pep_known_all) %>%
+  distinct(Seq, .keep_all = TRUE)
+
+# Prepare df for scatter
+df_iedb_new_pep_jj_anno <- prep_df(df_iedb_new_pep_jj)
+df_merge <- merge(df_iedb_new_pep_jj, df_iedb_new_pep_jj_anno, by.x = "Prot_accessions", by.y = "Proteins")
+
+
+# Add rank information
+df_pep_jj_hlaa0201 <- df_merge[df_merge$Seq %in% df_aff_jj_hlaa0201$Peptide,]
+df_pep_jj_hlaa0201 <- merge(df_pep_jj_hlaa0201, df_aff_jj_hlaa0201, by.x = "Seq", by.y = "Peptide")
+
+# Prepare data for scatter
+df_scatter_jj <- merge(df_scatter_hr, df_pep_jj_hlaa0201, by.x = "SYMBOL", by.y = "Genes")
+
+# Plot
+df_scatter_jj <- df_scatter_jj %>%
+  mutate(Status = case_when(
+    Seq %in% new_pep_jj_mhc1 ~ "New",
+    Seq %in% pep_known_all   ~ "Known"))
+
+# Agregate per gene, if one is new => orange
+df_scatter_jj_gene <- df_scatter_jj %>%
+  group_by(SYMBOL, Mean_expression_tissues, Intensity, HR) %>%
+  summarise(
+    Status = ifelse(any(Status == "New"), "New", "Known"),
+    Rank = min(Rank),
+    .groups = "drop"
+  )
+
+# Labeling genes
+df_labels <- df_scatter_jj_gene %>%
+  filter(Mean_expression_tissues < quantile(df_scatter_hr$Mean_expression_tissues, 0.75),
+         Intensity > median(df_scatter_hr$Intensity)) %>%
+  mutate(is_sb = Rank <= 0.5)
+
+# Plot
+p <- ggplot(df_scatter_jj_gene,
+            aes(x = Mean_expression_tissues,
+                y = Intensity,
+                color = Status,
+                text = paste0("Gene: ", SYMBOL,
+                              "<br>Status: ", Status,
+                              "<br>Mean expression: ", round(Mean_expression_tissues, 3),
+                              "<br>Intensity: ", round(Intensity, 3),
+                              "<br>HR: ", round(HR, 3),
+                              "<br>Rank: ", round(Rank, 3)))) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_point(
+    data = df_legend,
+    aes(x = Mean_expression_tissues, y = Intensity, color = Status),
+    size = 0, alpha = 0, inherit.aes = FALSE) +
+  scale_color_manual(
+  values = c("Known" = "#1f77b4",
+             "New" = "#ff7f0e",
+             "Strong binders" = "black",
+             "Others" = "black"),
+  labels = c("Known" = "Known peptides",
+             "New"  = "Novel peptides",
+             "Strong binders" = expression(bold("Strong binders (bold)")),
+             "Others" = "Others"),
+  breaks = c("Known", "New", "Strong binders", "Others")) +
+  guides(color = guide_legend(
+    override.aes = list(
+      size  = c(2, 2, 0, 0),
+      alpha = c(1, 1, 0, 0)))) +
+  geom_hline(yintercept = median(df_scatter_hr$Intensity), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_scatter_jj_gene$Mean_expression_tissues), y = median(df_scatter_hr$Intensity) - 0.2, label = "Median\nexpression", size = 2.5) +
+  geom_vline(xintercept = quantile(df_scatter_hr$Mean_expression_tissues, 0.75), linetype = "dashed", color = "black") +
+  annotate("text", x = quantile(df_scatter_hr$Mean_expression_tissues, 0.75) + 0.8, y = max(df_scatter_jj_gene$Intensity) + 0.2, label = "75th percentile", size = 2.5) +
+  geom_text_repel(
+    data = df_labels,
+    aes(label = SYMBOL,
+        fontface = ifelse(is_sb, "bold", "plain"),
+        size     = 3),
+    color         = "black",
+    max.overlaps  = 20,
+    box.padding   = 0.4,
+    segment.color = "black",
+    segment.size  = 0.3,
+    min.segment.length = 0) +
+  scale_size_identity() +
+  scale_x_log10(breaks = c(0.001, 0.01, 0.1, 1, 10), labels = c("0.001", "0.01", "0.1", "1", "10")) +
+  theme_minimal() +
+  labs(x = "CTAs expression in normal tissues (Log10 TPM mean)",
+       y = "CTAs expression in CHS (mean intensities)",
+       color = "JJ012 HLA-A*02:01\npeptides")
+p
+#ggsave("../results/scatter_plot_jj.svg", plot = p,  width = 20, height = 15, units = "cm")
+```
+\newpage
+
+
+
+### Rank scatter plot
+```{r, fig.cap="Rank scatter plot (JJ012)"}
+# Count number of peptides per rank
+df_count <- df_scatter_jj %>%
+  ungroup() %>%
+  mutate(Status = as.character(Status)) %>%
+  group_by(Rank) %>%
+  summarise(
+    nb_pep = n(),
+    is_new = any(Status == "New"))
+
+# Scatter plot
+p <- ggplot(df_count, aes(x = nb_pep, y = Rank, color = is_new)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("FALSE" = "grey30", "TRUE" = "#ff7f0e"), 
+                     labels = c("FALSE" = "Known peptides", "TRUE" = "Novel peptides")) +
+  geom_hline(yintercept = c(0.5, 2), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 0.5 * 0.8, label = "Strong binders", hjust = 1, color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 2 * 0.8, label = "Weak binders", hjust = 1, color = "black") +
+  labs(x = "JJ012 HLA-A*02:01 peptides number", y = "%Rank", color = "Category") +
+  scale_y_log10(breaks = c(0.01, 0.1, 1, 10, 100), labels = c("0.01", "0.1", "1", "10", "100")) +
+  theme_minimal()
+p
+#ggsave("../results/scatter_jj_a02.svg", plot = p)
+```
+\newpage
+
+
+# IV. Supplementary data 1
+```{r}
+# Select data
+df_ch_supp <- df_scatter_ch[df_scatter_ch$Intensity > median(df_scatter_hr$Intensity) & df_scatter_ch$Mean_expression_tissues < quantile(df_scatter_hr$Mean_expression_tissues, 0.75), c("SYMBOL", "Intensity", "Mean_expression_tissues", "Cluster", "Seq", "Affinity", "Rank", "Status")]
+df_jj_supp <- df_scatter_jj[df_scatter_jj$Intensity > median(df_scatter_hr$Intensity) & df_scatter_jj$Mean_expression_tissues < quantile(df_scatter_hr$Mean_expression_tissues, 0.75), c("SYMBOL", "Intensity", "Mean_expression_tissues", "Cluster", "Seq", "Affinity", "Rank", "Status")]
+
+# Write in excel file
+write_xlsx(list("JJ012_peptides_cadran" = df_jj_supp, "CH2879_peptides_cadran" = df_ch_supp), path = "../results/fig3_supp.xlsx")
+```
+

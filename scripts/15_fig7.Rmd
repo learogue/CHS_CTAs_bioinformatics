@@ -1,0 +1,590 @@
+---
+title: "IFNg condition comparison - Fig7 - Supplementary file 3"
+author: "Léa ROGUE"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+date: "2026-03-20"
+---
+
+```{r, echo = FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+# Load libraries and functions
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(grid)
+library(ggplot2)
+library(reshape2)
+library(UniProt.ws)
+library(dplyr)
+library(tidyr)
+library(VennDiagram)
+library(plotly)
+library(ggrepel)
+library(writexl)
+```
+
+```{r}
+# Connect to UniProt database (human, taxon 9606)
+up <- UniProt.ws(taxId = 9606)
+
+# Maps UniProt accessions to gene names and filters peptides belonging to CTA genes
+map_genes_to_peptides <- function(df_summary) {
+  # Expand rows so each protein accession is on its own line
+  df_sep <- df_summary %>%
+    mutate(RowID = row_number()) %>%
+    separate_rows(Prot_accessions, sep = ";\\s*") %>%
+    mutate(Prot_accessions = sub("-\\d+$", "", Prot_accessions))
+
+  # Query UniProt to retrieve primary gene names
+  gene_mapping <- AnnotationDbi::select(
+    up,
+    keys = unique(df_sep$Prot_accessions),
+    columns = "gene_primary",
+    keytype = "UniProtKB"
+  )
+
+  # Merge gene names back and collapse per peptide sequence
+  df_merged <- df_sep %>%
+    left_join(gene_mapping, by = c("Prot_accessions" = "Entry"))
+
+  df_final <- df_merged %>%
+    group_by(Seq) %>%
+    summarise(
+      Proteins = paste(unique(Prot_accessions), collapse = "; "),
+      Genes = paste(unique(Gene.Names..primary.), collapse = "; "),
+      .groups = "drop"
+    )
+
+  # Join back to the original dataframe and keep only CTA peptides
+  df_summary %>%
+    left_join(df_final, by = "Seq") %>%
+    filter(Genes %in% l_CTA)
+}
+```
+
+
+# Load data
+```{r, fig.cap="Peptides length histogram (MHC-I)"}
+# Load CTA gene list
+l_CTA <- read.table("../data/CTA_list_clean.txt")$V1
+
+# Load full immunopeptidomic dataset (IFNg experiment, both cell lines)
+df_complete <- read.csv("../data/immunopep_all_clean.tsv", sep = "\t", header = T)
+
+# Keep only canonical MHC-I peptides (length 8–11 aa)
+df_complete <- df_complete[df_complete$Sequence.Length >= 8 & df_complete$Sequence.Length <= 11,]
+
+# Keep only canonical sequences (exclude non-canonical or ambiguous entries)
+df_complete <- df_complete[df_complete$Marked.as %in% "Cannonic" | df_complete$Marked.as %in% "Cannonic;Mut",]
+
+# Load NetMHCpan affinity prediction results (all alleles)
+df_aff <- read.table("../data/table_res_netmhc_all.tsv", sep = "\t", header = T)
+
+# Load IEDB MHC-I reference epitopes
+df_iedb_mhc1 <- read.csv("../data/epitope_table_export_human_MHC_I.tsv", header = T, sep = "\t")
+df_pep_mhc1 <- df_iedb_mhc1[, c("Name", "Source.Molecule.IRI", "Molecule.Parent.IRI")]
+
+# Extract clean peptide sequences from IEDB (remove modifications and adducts)
+pep_iedb_mhc1 <- unique(df_pep_mhc1$Name)
+pep_iedb_mhc1 <- gsub(" .*|\\+.*", "", pep_iedb_mhc1)
+```
+
+
+# I. MHC-I differential analysis (IFNg vs NoIFNg)
+
+## 1) All peptides volcano plot
+### CH2879
+```{r, fig.cap="Volcano plot all CH2879"}
+# Prepare data
+df_ch_all <- data.frame(
+  pep = df_complete$Annotated.Sequence,
+  log2_ratio = log2(df_complete$Abundance.Ratio...CH2879..INF.....CH2879..NoINF.),
+  log10_p = -log10(df_complete$Abundance.Ratio.Adj..P.Value...CH2879..INF.....CH2879..NoINF.),
+  Contaminant = df_complete$Contaminant
+)
+
+# Remove rows with missing values
+df_ch_all <- na.omit(df_ch_all)
+
+# Categorise peptides
+df_ch_all$category <- ifelse(df_ch_all$log2_ratio > 1  & df_ch_all$log10_p > -log10(0.05), "Upregulated",
+                      ifelse(df_ch_all$log2_ratio < -1 & df_ch_all$log10_p > -log10(0.05), "Downregulated",
+                             "Not significant"))
+table_sig <- table(df_ch_all$category)
+
+# Volcano plot
+p <- ggplot(df_ch_all, aes(x = log2_ratio, y = log10_p)) +
+    geom_point(aes(color = category), alpha = 0.7, size = 1) +
+    scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue")) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    labs(
+      x = "Log2 Ratio",
+      y = "-log10(adj. p-value)",
+      color = ""
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "right") +
+  annotate("text",
+           x = 3,  
+           y = max(df_ch_all$log10_p, na.rm = TRUE) + 2,
+           label = table_sig["Upregulated"],
+           hjust = 1, vjust = 1, size = 4) +
+  annotate("text",
+           x = -3,
+           y = max(df_ch_all$log10_p, na.rm = TRUE) + 2,
+           label = table_sig["Downregulated"],
+           hjust = 0, vjust = 1, size = 4)
+p
+ggsave("../results/v_plot_mhc1_ch.svg", plot = p, width = 5, height = 5)
+```
+
+### JJ012
+```{r, fig.cap="Volcano plot all JJ012"}
+# Prepare data
+df_jj_all <- data.frame(
+  pep = df_complete$Annotated.Sequence,
+  genes = df_complete$Master.Protein.Accessions,
+  log2_ratio = log2(df_complete$Abundance.Ratio...JJ012..INF.....JJ012..NoINF.),
+  log10_p = -log10(df_complete$Abundance.Ratio.Adj..P.Value...JJ012..INF.....JJ012..NoINF.)
+)
+
+df_jj_all <- na.omit(df_jj_all)
+
+# Categorise peptides
+df_jj_all$category <- ifelse(df_jj_all$log2_ratio > 1  & df_jj_all$log10_p > -log10(0.05), "Upregulated",
+                      ifelse(df_jj_all$log2_ratio < -1 & df_jj_all$log10_p > -log10(0.05), "Downregulated",
+                             "Not significant"))
+table_sig <- table(df_jj_all$category)
+
+# Volcano plot
+p <- ggplot(df_jj_all, aes(x = log2_ratio, y = log10_p)) +
+    geom_point(aes(color = category), alpha = 0.7, size = 1) +
+    scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue")) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    labs(
+      x = "Log2 Ratio",
+      y = "-log10(adj. p-value)",
+      color = ""
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "right") +
+  annotate("text",
+           x = 3,  
+           y = max(df_jj_all$log10_p, na.rm = TRUE) + 2,
+           label = table_sig["Upregulated"],
+           hjust = 1, vjust = 1, size = 4) +
+  annotate("text",
+           x = -3,
+           y = max(df_jj_all$log10_p, na.rm = TRUE) + 2,
+           label = table_sig["Downregulated"],
+           hjust = 0, vjust = 1, size = 4)
+p
+ggsave("../results/v_plot_mhc1_jj.svg", plot = p, width = 5, height = 5)
+```
+
+
+### Gene annotation of all peptides
+```{r}
+# Expand protein accessions (one per row) and strip isoform suffixes
+df_sep <- df_complete %>%
+  mutate(RowID = row_number()) %>%
+  separate_rows(Master.Protein.Accessions, sep = ";\\s*") %>%
+  mutate(Master.Protein.Accessions = sub("-\\d+$", "", Master.Protein.Accessions))
+
+# Query UniProt to get primary gene names for all accessions
+up <- UniProt.ws(taxId = 9606)
+
+gene_mapping <- AnnotationDbi::select(
+  up,
+  keys = df_sep$Master.Protein.Accessions,
+  columns = "gene_primary",
+  keytype = "UniProtKB"
+)
+
+# Merge gene names and collapse multiple genes per peptide
+df_merged <- df_sep %>%
+  left_join(gene_mapping, by = c("Master.Protein.Accessions" = "Entry"))
+
+df_final <- df_merged %>%
+  group_by(Annotated.Sequence) %>%
+  summarise(
+    Proteins = paste(unique(Master.Protein.Accessions), collapse = "; "),
+    Genes = paste(unique(Gene.Names..primary.), collapse = "; "),
+    .groups = "drop"
+  )
+
+# Join gene names back to the full peptide table
+df_final_pep <- df_complete %>%
+  left_join(df_final, by = "Annotated.Sequence")
+
+# Restrict to CTA-derived peptides
+df_final_pep_cta <- df_final_pep[df_final_pep$Genes %in% l_CTA,]
+```
+
+### Upregulated peptides (all genes)
+```{r}
+# Subset upregulated peptides in JJ012
+df_jj_all_up <- df_jj_all[df_jj_all$category %in% "Upregulated",]
+
+# Remove duplicate annotated sequences to get one row per unique peptide
+df_final_pep_unique <- df_final_pep[!duplicated(df_final_pep$Annotated.Sequence), ]
+
+# Merge volcano data with gene annotation
+df_jj_all_up_table <- merge(df_jj_all_up, df_final_pep_unique,
+                             by.x = "pep", by.y = "Annotated.Sequence", all.x = TRUE)
+
+df_jj_all_up_table <- df_jj_all_up_table %>%
+  filter(category == "Upregulated") %>%
+  arrange(desc(log2_ratio))
+
+# Extract clean peptide sequence (strip flanking residues from annotated format)
+df_jj_all_up_table$Peptide <- gsub("^.*\\.(.*)\\..*$", "\\1", df_jj_all_up_table$pep)
+df_jj_all_up_table$pvalue <- 10^(-df_jj_all_up_table$log10_p)
+df_jj_all_up_table$Gene <- df_jj_all_up_table$Genes
+df_jj_all_up_table <- df_jj_all_up_table[, c("Gene", "Peptide", "log2_ratio", "pvalue")]
+
+#write.table(df_jj_all_up_table, sep = "\t", quote = F, dec = ",", "../results/table_all_up_jj.tsv")
+```
+
+```{r}
+# CH2879: extract upregulated peptides and format for export
+df_ch_all_up <- df_ch_all[df_ch_all$category %in% "Upregulated",]
+
+df_ch_all_up_table <- merge(df_ch_all_up, df_final_pep_unique,
+                             by.x = "pep", by.y = "Annotated.Sequence", all.x = TRUE)
+
+df_ch_all_up_table <- df_ch_all_up_table %>%
+  filter(category == "Upregulated") %>%
+  arrange(desc(log2_ratio))
+
+df_ch_all_up_table$Peptide <- gsub("^.*\\.(.*)\\..*$", "\\1", df_ch_all_up_table$pep)
+df_ch_all_up_table$pvalue <- 10^(-df_ch_all_up_table$log10_p)
+df_ch_all_up_table$Gene <- df_ch_all_up_table$Genes
+
+df_ch_all_up_table <- df_ch_all_up_table[, c("Gene", "Peptide", "log2_ratio", "pvalue")]
+
+#write.table(df_ch_all_up_table, sep = "\t", quote = F, dec = ",", "../results/table_all_up_ch.tsv")
+```
+
+## 2) CTA peptides volcano plot
+### CH2879
+```{r, fig.cap="Volcano plot CTAs CH2879"}
+# Build volcano dataframe restricted to CTA-derived peptides (CH2879)
+df_ch_cta <- data.frame(
+  Genes = df_final_pep_cta$Genes,
+  pep = df_final_pep_cta$Annotated.Sequence,
+  log2_ratio = log2(df_final_pep_cta$Abundance.Ratio...CH2879..INF.....CH2879..NoINF.),
+  log10_p = -log10(df_final_pep_cta$Abundance.Ratio.Adj..P.Value...CH2879..INF.....CH2879..NoINF.))
+df_ch_cta <- na.omit(df_ch_cta)
+
+# Categorise CTA peptides
+df_ch_cta$category <- ifelse(df_ch_cta$log2_ratio > 1  & df_ch_cta$log10_p > -log10(0.05), "Upregulated",
+                      ifelse(df_ch_cta$log2_ratio < -1 & df_ch_cta$log10_p > -log10(0.05), "Downregulated",
+                             "Not significant"))
+table_sig <- table(df_ch_cta$category)
+
+# Volcano plot with slight jitter to avoid overplotting
+p <- ggplot(df_ch_cta, aes(x = log2_ratio, y = log10_p)) +
+    geom_point(aes(color = category), alpha = 0.7, size = 1,
+               position = position_jitter(width = 0.05, height = 0.1)) +
+    scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue")) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    labs(x = "Log2 Ratio",
+         y = "-log10(adj. p-value)",
+         color = "") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "right") +
+    annotate("text",
+             x = 3,  
+             y = max(df_ch_cta$log10_p, na.rm = TRUE) + 2,
+             label = table_sig["Upregulated"],
+             hjust = 1, vjust = 1, size = 4) +
+    annotate("text",
+             x = -3,
+             y = max(df_ch_cta$log10_p, na.rm = TRUE) + 2,
+             label = table_sig["Downregulated"],
+             hjust = 0, vjust = 1, size = 4)
+p
+#ggsave("../results/v_plot_mhc1_ch_cta.svg", plot = p, width = 5, height = 5)
+```
+
+```{r}
+# Extract and format upregulated CTA peptides for CH2879
+df_up_ch <- df_ch_cta %>%
+  filter(category == "Upregulated") %>%
+  arrange(desc(log2_ratio))
+
+df_up_ch$Peptide <- gsub("^.*\\.(.*)\\..*$", "\\1", df_up_ch$pep)
+df_up_ch$pvalue  <- 10^(-df_up_ch$log10_p)
+df_up_ch$Gene    <- df_up_ch$Genes
+
+df_up_ch <- df_up_ch[, c("Gene", "Peptide", "log2_ratio", "pvalue")]
+```
+
+### JJ012
+```{r, fig.cap="Volcano plot CTAs JJ012"}
+# Build volcano dataframe restricted to CTA-derived peptides (JJ012)
+df_jj_cta <- data.frame(
+  Genes = df_final_pep_cta$Genes,
+  pep = df_final_pep_cta$Annotated.Sequence,
+  log2_ratio = log2(df_final_pep_cta$Abundance.Ratio...JJ012..INF.....JJ012..NoINF.),
+  log10_p = -log10(df_final_pep_cta$Abundance.Ratio.Adj..P.Value...JJ012..INF.....JJ012..NoINF.))
+df_jj_cta <- na.omit(df_jj_cta)
+
+# Categorise CTA peptides
+df_jj_cta$category <- ifelse(df_jj_cta$log2_ratio > 1  & df_jj_cta$log10_p > -log10(0.05), "Upregulated",
+                      ifelse(df_jj_cta$log2_ratio < -1 & df_jj_cta$log10_p > -log10(0.05), "Downregulated",
+                             "Not significant"))
+table_sig <- table(df_jj_cta$category)
+
+# Volcano plot
+p <- ggplot(df_jj_cta, aes(x = log2_ratio, y = log10_p)) +
+    geom_point(aes(color = category), alpha = 0.7, size = 1,
+               position = position_jitter(width = 0.10, height = 0.1)) +
+    scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue")) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    labs(x = "Log2 Ratio",
+         y = "-log10(adj. p-value)",
+         color = "") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "right") +
+    annotate("text",
+             x = 3,  
+             y = max(df_jj_cta$log10_p, na.rm = TRUE) + 2,
+             label = table_sig["Upregulated"],
+             hjust = 1, vjust = 1, size = 4) +
+    annotate("text",
+             x = -3,
+             y = max(df_jj_cta$log10_p, na.rm = TRUE) + 2,
+             label = table_sig["Downregulated"],
+             hjust = 0, vjust = 1, size = 4)
+p
+#ggsave("../results/v_plot_mhc1_jj_cta.svg", plot = p, width = 5, height = 5)
+```
+
+```{r}
+# Extract and format upregulated CTA peptides for JJ012
+df_up_jj <- df_jj_cta %>%
+  filter(category == "Upregulated") %>%
+  arrange(desc(log2_ratio))
+
+df_up_jj$Peptide <- gsub("^.*\\.(.*)\\..*$", "\\1", df_up_jj$pep)
+df_up_jj$pvalue <- 10^(-df_up_jj$log10_p)
+df_up_jj$Gene <- df_up_jj$Genes
+
+df_up_jj <- df_up_jj[, c("Gene", "Peptide", "log2_ratio", "pvalue")]
+```
+
+
+# III. Venn diagrams
+```{r}
+# Extract UniProt IDs from IEDB parent molecule IRIs and map to gene names
+df_iedb_mhc1$ID <- gsub("http://www.uniprot.org/uniprot/", "", df_iedb_mhc1$Molecule.Parent.IRI)
+df_iedb_mhc1$ID <- sub("-.*", "", df_iedb_mhc1$ID)
+
+up <- UniProt.ws(taxId = 9606)
+gene_mapping <- AnnotationDbi::select(
+  up,
+  keys = unique(df_iedb_mhc1$ID[df_iedb_mhc1$ID != ""]),
+  columns = "gene_primary",
+  keytype = "UniProtKB")
+colnames(gene_mapping) <- c("From", "ID", "Gene.Names..primary.")
+df_iedb_mhc1_name <- merge(df_iedb_mhc1, gene_mapping, by.x = "ID", all.x = TRUE)
+
+# Keep only IEDB epitopes from CTA genes
+df_iedb_mhc1_cta <- df_iedb_mhc1_name[df_iedb_mhc1_name$Gene.Names..primary. %in% l_CTA, ]
+```
+
+
+```{r}
+# Clean IEDB peptide sequences (strip modifications)
+pep_iedb_mhc1_cta <- unique(df_iedb_mhc1_cta$Name)
+pep_iedb_mhc1_cta <- gsub(" .*|\\+.*", "", pep_iedb_mhc1_cta)
+pep_iedb_mhc1_cta <- unique(pep_iedb_mhc1_cta)
+
+# Identify novel peptides (not in IEDB, not a substring of any IEDB peptide)
+new_pep_ch_mhc1 <- setdiff(df_up_ch$Peptide, pep_iedb_mhc1_cta)
+# Check whether any novel peptide is a substring of an IEDB peptide
+grep_ch <- sapply(new_pep_ch_mhc1, function(x) any(grepl(x, pep_iedb_mhc1_cta)))
+new_pep_ch_mhc1 <- new_pep_ch_mhc1[!new_pep_ch_mhc1 %in% names(grep_ch)[grep_ch]]
+df_ch_new_pep_mhc1 <- df_up_ch %>%
+  filter(Peptide %in% new_pep_ch_mhc1) %>%
+  distinct(Peptide, .keep_all = TRUE)
+
+# JJ012
+new_pep_jj_mhc1 <- setdiff(df_up_jj$Peptide, pep_iedb_mhc1_cta)
+grep_jj <- sapply(new_pep_jj_mhc1, function(x) any(grepl(x, pep_iedb_mhc1_cta)))
+new_pep_jj_mhc1 <- new_pep_jj_mhc1[!new_pep_jj_mhc1 %in% names(grep_jj)[grep_jj]]
+
+df_jj_new_pep_mhc1 <- df_up_jj %>%
+  filter(Peptide %in% new_pep_jj_mhc1) %>%
+  distinct(Peptide, .keep_all = TRUE)
+
+# Extended IEDB sets (original + substring matches)
+pep_iedb_extended_ch <- unique(c(pep_iedb_mhc1_cta, names(grep_ch)[grep_ch]))
+pep_iedb_extended_jj <- unique(c(pep_iedb_mhc1_cta, names(grep_jj)[grep_jj]))
+```
+
+
+## JJ012
+```{r, fig.cap="Venn plot JJ012 (MHCI)"}
+# Venn diagram: overlap between IFNg-upregulated CTA peptides and IEDB reference epitopes
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_jj),
+  area2 = length(df_up_jj$Peptide),
+  cross.area = length(df_up_jj$Peptide) - length(new_pep_jj_mhc1), 
+  category = c("IEDB", "JJ012"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+\newpage
+
+## CH2879
+```{r, fig.cap="Venn plot CH2879 (MHCI)"}
+grid.newpage()
+venn <- draw.pairwise.venn(
+  area1 = length(pep_iedb_extended_ch),
+  area2 = length(df_up_ch$Peptide),
+  cross.area = length(df_up_ch$Peptide) - length(new_pep_ch_mhc1), 
+  category = c("IEDB", "CH2879"),
+  fill = c("#2C7BB6", "#ff7f0e"),
+  scaled = FALSE)
+grid.draw(venn)
+```
+
+
+# IV. HLA binding affinity
+
+```{r}
+# Keep only predictions matching upregulated CTA peptides
+df_aff_ch_hlaa0101 <- df_aff[df_aff$Allele == "HLA-A0101" & df_aff$Peptide %in% df_up_ch$Peptide, c("Peptide", "Affinity", "Rank")]
+
+df_aff_jj_hlaa0201 <- df_aff[df_aff$Allele == "HLA-A0201" & df_aff$Peptide %in% df_up_jj$Peptide, c("Peptide", "Affinity", "Rank")]
+```
+
+## CH2879
+```{r}
+# Identify known peptides for CH2879 (in IEDB or substring matches)
+pep_commons <- intersect(df_up_ch$Peptide, pep_iedb_mhc1_cta)
+pep_commons2 <- names(grep_ch)[grep_ch]
+pep_known_all <- union(pep_commons, pep_commons2)
+
+# Combine novel and known peptides for annotation
+df_iedb_new_pep_ch <- df_up_ch %>%
+  filter(Peptide %in% new_pep_ch_mhc1 | Peptide %in% pep_known_all) %>%
+  distinct(Peptide, .keep_all = TRUE)
+
+# Merge with affinity predictions
+df_pep_ch_hlaa0101 <- df_up_ch[df_up_ch$Peptide %in% df_aff_ch_hlaa0101$Peptide, ]
+df_pep_ch_hlaa0101 <- merge(df_pep_ch_hlaa0101, df_aff_ch_hlaa0101, by = "Peptide")
+
+df_pep_ch_hlaa0101 <- df_pep_ch_hlaa0101 %>%
+  mutate(Status = case_when(
+    Peptide %in% new_pep_ch_mhc1 ~ "New",
+    Peptide %in% pep_known_all   ~ "Known"
+  ))
+```
+
+```{r, fig.cap="Scatter plot Rank CH2879"}
+# Count peptides per %Rank bin and flag ranks containing novel peptides
+df_count <- df_pep_ch_hlaa0101 %>%
+  ungroup() %>%
+  mutate(Status = as.character(Status)) %>%
+  group_by(Rank) %>%
+  summarise(
+    nb_pep = n(),
+    is_new = any(Status == "New"))
+
+
+p <- ggplot(df_count, aes(x = nb_pep, y = Rank, color = is_new)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("FALSE" = "grey30", "TRUE" = "#ff7f0e"), 
+                     labels = c("FALSE" = "Known peptides", "TRUE" = "Novel peptides")) +
+  geom_hline(yintercept = c(0.5, 2), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 0.5 * 0.8, label = "Strong binders", hjust = 1, color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 2   * 0.8, label = "Weak binders",   hjust = 1, color = "black") +
+  labs(x = "CH2879 HLA-A*01:01 peptides number", y = "%Rank", color = "Category") +
+  scale_y_log10(breaks = c(0.01, 0.1, 1, 10, 100), labels = c("0.01", "0.1", "1", "10", "100")) +
+  scale_x_continuous(breaks = seq(0, max(df_count$nb_pep), by = 1)) +
+  theme_minimal()
+p
+#ggsave("../results/scatter_ch_a01.svg", plot = p)
+```
+
+### JJ012
+```{r}
+# Identify known peptides for JJ012
+pep_commons <- intersect(df_up_jj$Peptide, pep_iedb_mhc1_cta)
+pep_commons2 <- names(grep_jj)[grep_jj]
+pep_known_all <- union(pep_commons, pep_commons2)
+
+# Combine novel and known peptides for annotation
+df_iedb_new_pep_jj <- df_up_jj %>%
+  filter(Peptide %in% new_pep_jj_mhc1 | Peptide %in% pep_known_all) %>%
+  distinct(Peptide, .keep_all = TRUE)
+
+# Merge with affinity predictions
+df_pep_jj_hlaa0201 <- df_up_jj[df_up_jj$Peptide %in% df_aff_jj_hlaa0201$Peptide, ]
+df_pep_jj_hlaa0201 <- merge(df_pep_jj_hlaa0201, df_aff_jj_hlaa0201, by.x = "Peptide", by.y = "Peptide")
+
+df_pep_jj_hlaa0201 <- df_pep_jj_hlaa0201 %>%
+  mutate(Status = case_when(
+    Peptide %in% new_pep_jj_mhc1 ~ "New",
+    Peptide %in% pep_known_all   ~ "Known"
+  ))
+```
+
+```{r, fig.cap="Scatter plot Rank JJ012"}
+# Count peptides per %Rank
+df_count <- df_pep_jj_hlaa0201 %>%
+  ungroup() %>%
+  mutate(Status = as.character(Status)) %>%
+  group_by(Rank) %>%
+  summarise(
+    nb_pep = n(),
+    is_new = any(Status == "New"))
+
+
+p <- ggplot(df_count, aes(x = nb_pep, y = Rank, color = is_new)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("FALSE" = "grey30", "TRUE" = "#ff7f0e"), 
+                     labels = c("FALSE" = "Known peptides", "TRUE" = "Novel peptides")) +
+  geom_hline(yintercept = c(0.5, 2), linetype = "dashed", color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 0.5 * 0.8, label = "Strong binders", hjust = 1, color = "black") +
+  annotate("text", x = max(df_count$nb_pep), y = 2   * 0.8, label = "Weak binders",   hjust = 1, color = "black") +
+  labs(x = "JJ012 HLA-A*02:01 peptides number", y = "%Rank", color = "Category") +
+  scale_y_log10(breaks = c(0.01, 0.1, 1, 10, 100), labels = c("0.01", "0.1", "1", "10", "100")) +
+  scale_x_continuous(breaks = seq(0, max(df_count$nb_pep), by = 2)) +
+  theme_minimal()
+p
+#ggsave("../results/scatter_jj_a0201.svg", plot = p)
+```
+
+# V. Supplementary data 3
+```{r}
+write_xlsx(list("JJ012_all_upregulated" = df_jj_all_up_table,
+                "CH2879_all_upregulated" = df_ch_all_up_table,
+                "JJ012_CTA_upregulated" = df_pep_jj_hlaa0201,
+                "CH2879_CTA_upregulated" = df_pep_ch_hlaa0101),
+            path = "../results/fig7_supp.xlsx")
+```

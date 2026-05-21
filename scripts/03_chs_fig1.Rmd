@@ -1,0 +1,492 @@
+---
+title: "Association between CTAs and survival - Fig1 - FigS1"
+author: "Léa ROGUE"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '4'
+    includes:
+      before_body: tex_files/list_of_figures.tex
+date: "15-01-2026"
+---
+
+```{r, echo = FALSE, results='hide', message=FALSE, warning=FALSE}
+library(knitr)
+opts_chunk$set(
+  tidy.opts = list(width.cutoff = 60), 
+  tidy = TRUE, 
+  fig.align = 'center'
+)
+```
+
+\newpage
+
+# Load libraries
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+library(circlize)
+library(colorRamp2)
+library(RColorBrewer)
+library(survival)
+library(forestplot)
+library(survminer)
+library(ggplot2)
+library(ggrepel)
+library(plotly)
+library(ggsurvfit)
+library(gridExtra)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+
+# Functions
+```{r}
+# Function to apply coxph model per columns
+apply_coxph_model <- function(df) {
+  # Empty df
+  results <- data.frame()
+
+  # Loop on each columns to apply coxph
+  for (col in colnames(df)[3:ncol(df)]) {
+    model <- coxph(Surv(OS.delay, OS.event) ~ df[[col]], data = df)
+    
+    # Extract results
+    exp_coef <- summary(model)$coefficients[,"exp(coef)"]
+    lower_ci <- summary(model)$conf.int[,"lower .95"]
+    upper_ci <- summary(model)$conf.int[,"upper .95"]
+    p_value <- summary(model)$coefficients[,"Pr(>|z|)"]
+    results <- rbind(results, data.frame(
+      Variable = col,
+      HR = exp_coef,
+      LowerCI = lower_ci,
+      UpperCI = upper_ci,
+      Pvalue = p_value))
+  }
+  return(results)
+}
+
+# Function to generate forest plot from coxph analysis from the function apply_coxph_model
+generate_forestplot <- function(data, Type) {
+  if (Type == TRUE){
+    # Order by Signature and p-value
+    data <- data[order(data$Signature,  data$Pvalue),]
+    data$Pvalue <- sprintf("%.4f", data$Pvalue)
+    data %>%
+      forestplot(
+        labeltext = c(Signature, Variable, Pvalue),   
+        mean = HR,
+        lower = LowerCI,
+        upper = UpperCI,
+        grid = TRUE,
+        zero = 1,
+        col = fpColors(box = "black", line = "black"),
+        hrzl_lines = TRUE,
+        title = "Forest Plot for Cox Model",
+        txt_gp = fpTxtGp(label = gpar(fontsize = 8)),
+        ci.vertices = TRUE,
+        boxsize = 0.5) %>%
+      fp_set_zebra_style("#EFEFEF") %>% 
+      fp_add_header(
+        Signature = c("", "Cell type"),
+        Variable = c("", "Genes"),
+        Pvalue = c("", "p-value"))
+  }
+  else {
+    # Order by p-value
+    data <- data[order(data$Pvalue),]
+    data$Pvalue <- sprintf("%.4f", data$Pvalue)
+    data %>%
+      forestplot(
+        labeltext = c(Variable, Pvalue),   
+        mean = HR,
+        lower = LowerCI,
+        upper = UpperCI,
+        grid = TRUE,
+        zero = 1,
+        col = fpColors(box = "black", line = "black"),
+        hrzl_lines = TRUE,
+        title = "Forest Plot for Cox Model",
+        txt_gp = fpTxtGp(label = gpar(fontsize = 6)),
+        ci.vertices = TRUE,
+        boxsize = 0.3) %>%
+      fp_set_zebra_style("#EFEFEF") %>% 
+      fp_add_header(
+        Variable = c("", "Genes"),
+        Pvalue = c("", "p-value"))    
+  }
+}
+
+# Function to calculate Z scores
+calculate_z_scores <- function(df_input, col) {
+  # Exclude col PROBEID SYMBOL and CTA
+  data_values <- df_input[, -c(col)]
+
+  # Calculate Z-scores
+  z_scores_row <- t(scale(t(data_values)))
+
+  # Add columns
+  df_z_scores <- cbind(df_input[, c(col)], z_scores_row)
+
+  # Return df
+  return(df_z_scores)
+}
+```
+
+
+# Load data
+```{r}
+l_cta <- read.table("../data/CTA_list_clean.txt", header = F)$V1
+l_cta_validated <- read.table("../data/CTA_validated_list.txt", sep = "\t", header = FALSE)$V1
+
+# Matrix with intensities and information on immune signature and CTA
+df_CTA_immune_whole_clean_avg_102 <- read.table("../results/whole_gene_int_CTA_sign_imm_clean.tsv", sep = "\t", header = TRUE, check.names = FALSE, row.names = 1)
+
+# Metadata
+df_metadata <- read.table("../results/metadata.tsv", sep = "\t", header = TRUE, check.names = FALSE, dec = ",")
+
+# Conventional CHS metadata
+df_metadata_conv <- df_metadata[df_metadata$Histology != "N/A" & df_metadata$Histology != "benign" & df_metadata$Histology != "dedifferentiated",]
+df_metadata_surv_conv <- df_metadata_conv[, c("Patient", "OS.delay", "OS.event")]
+df_metadata_surv_conv <- na.omit(df_metadata_surv_conv)
+
+# Matrix for conventional patients with survival metadata
+df_CTA_immune_whole_clean_avg_63 <- df_CTA_immune_whole_clean_avg_102[, c("Signature", "CTA", colnames(df_CTA_immune_whole_clean_avg_102)[colnames(df_CTA_immune_whole_clean_avg_102) %in% df_metadata_surv_conv$Patient])]
+df_z_scores_63 <- calculate_z_scores(df_CTA_immune_whole_clean_avg_63, c(1,2))
+
+# Consensus
+df_hpa_raw <- read.table("../data/rna_tissue_consensus.tsv", sep = "\t", header = T)
+df_hpa_cta <- df_hpa_raw[df_hpa_raw$Gene.name %in% l_cta,]
+df_hpa_cta <- as.data.frame(df_hpa_cta %>%
+  pivot_wider(id_cols = Tissue,
+              names_from = Gene.name,
+              values_from = nTPM,
+              values_fn = dplyr::first,
+              values_fill = 0))
+rownames(df_hpa_cta) <- df_hpa_cta$Tissue
+df_hpa_cta <- df_hpa_cta[, -1]
+```
+
+
+# I. CTA expression in healthy tissues
+```{r, fig.height=7, fig.cap="Heatmap of CTAs expression in normal tissues (HPA-GTEx consensus)"}
+# Log10 to scale the data
+df_log10 <- log10(df_hpa_cta + 1)
+
+# CTA annotation
+df_cta_validated <- df_log10[, colnames(df_log10) %in% l_cta_validated]
+df_cta_putatives <- df_log10[, !colnames(df_log10) %in% l_cta_validated]
+
+# Create heatmaps
+colors = colorRamp2(c(min(df_log10), max(df_log10)), c("black", "red"))
+ht_validated <- Heatmap(
+    as.matrix(df_cta_validated),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    col = colors,
+    border = NA,
+    show_column_names = FALSE,
+    show_row_names = TRUE,
+    column_title = "Validated CTAs",
+    row_names_gp = gpar(fontsize = 10),
+    heatmap_legend_param = list(title = "Gene expression (Log10 TPM)"),
+    rect_gp = gpar(col = NA)
+)
+
+ht_putatives <- Heatmap(
+    as.matrix(df_cta_putatives),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    col = colors,
+    show_column_names = FALSE,
+    show_row_names = TRUE,
+    column_title = "Putative CTAs",
+    row_names_gp = gpar(fontsize = 10),
+    rect_gp = gpar(col = NA)
+)
+
+ht_validated + ht_putatives
+```
+\newpage
+
+# II. Survival analyses
+```{r, fig.height=6, fig.cap="Forest plot for the 20 CTAs with the highest HR and the 20 with the lowest HR (n = 63)"}
+# CTA data
+df_expr_cta_63 <- subset(df_z_scores_63, CTA == "CTA")
+df_expr_cta_63 <- df_expr_cta_63[,!colnames(df_expr_cta_63) %in% c("Signature", "CTA", "SYMBOL")]
+df_expr_cta_63 <- as.data.frame(t(df_expr_cta_63))
+df_expr_cta_63$Patient <- rownames(df_expr_cta_63)
+df_expr_cta_63 <- merge(df_metadata_surv_conv, df_expr_cta_63, by = "Patient")
+rownames(df_expr_cta_63) <- df_expr_cta_63$Patient
+df_expr_cta_63 <- df_expr_cta_63[, -1]
+
+# Apply coxph and generate forest plot with significant data
+res_cta <- apply_coxph_model(df_expr_cta_63)
+res_cta_signif <- res_cta[res_cta$Pvalue < 0.05,]
+res_cta_sorted <- res_cta_signif[order(res_cta_signif$HR, decreasing = TRUE), ]
+
+# Select top 20 highest HR
+top20_hr <- head(res_cta_sorted, 20)
+
+# Select top 20 smallest HR
+bottom20_hr <- head(res_cta_sorted[order(res_cta_sorted$HR, decreasing = FALSE), ], 20)
+
+# Combine
+res_cta_extremes <- rbind(top20_hr, bottom20_hr)
+
+# Forestplot
+generate_forestplot(res_cta_extremes, Type = FALSE)
+```
+
+\newpage
+
+# III. Heatmap of CTAs significantly associated with survival
+```{r, fig.cap="Heatmap of CTAs that impact survival (n = 63)"}
+# List of CTA for coxph analysis
+l_CTA_conv <- res_cta_signif$Variable
+data_cta_63 <- df_z_scores_63[rownames(df_z_scores_63) %in% l_CTA_conv, -c(1,2)]
+
+# Create the heatmap
+colors <- colorRampPalette(c("blue", "white", "red"))(100)
+heatmap_cta_signif_conv_63 <- Heatmap(as.matrix(data_cta_63),
+    cluster_rows = TRUE,    
+    cluster_columns = TRUE,
+    cluster_column_slices = TRUE,
+    clustering_distance_columns = "euclidean",
+    clustering_method_columns = "complete",
+    show_column_dend = TRUE,
+    col = colorRamp2(seq(-8, 8, length.out = 100), colors),  
+    border = NA,             
+    show_column_names = TRUE,
+    show_row_names = TRUE,
+    column_names_gp = gpar(fontsize = 4),
+    row_names_gp = gpar(fontsize = 2),
+    heatmap_legend_param = list(title = "Expression level (z_scores")
+)
+heatmap_cta_signif_conv_63 <- draw(heatmap_cta_signif_conv_63)
+```
+\newpage
+
+```{r, fig.height=6, fig.width=8, fig.cap="Significant CTAs heatmap with grade data (n = 63)"}
+# Store clusters
+col_dend <- column_dend(heatmap_cta_signif_conv_63)
+row_dend <- row_dend(heatmap_cta_signif_conv_63)
+
+# Cut in clusters
+col_clusters <- cutree(as.hclust(col_dend), k = 3)
+row_clusters <- cutree(as.hclust(row_dend), k = 3)
+
+# Select colors
+histology_colors <- c("G1" = "#9e9e9eff",
+                      "G2" = "#625f6aff", 
+                      "G3" = "#000000ff")
+
+# Heatmap
+Heatmap(as.matrix(data_cta_63),
+    cluster_rows = TRUE,    
+    cluster_columns = TRUE,
+    cluster_column_slices = TRUE,
+    column_split = col_clusters,
+    row_split = row_clusters,
+    clustering_distance_columns = "euclidean",
+    clustering_method_columns = "complete",
+    show_column_dend = TRUE,
+    col = colorRamp2(seq(-8, 8, length.out = 100), colors),  
+    border = NA,             
+    show_column_names = F,
+    show_row_names = F,
+    heatmap_legend_param = list(title = "Z-scores of intensities calculated by row"),
+    top_annotation = columnAnnotation(
+      Histology = df_metadata_conv[df_metadata_conv$Patient %in% colnames(data_cta_63), "Histology"],
+      col = list(Histology = histology_colors))
+)
+```
+
+\newpage
+
+# IV. Kaplan Meier plot
+```{r}
+# Read clusters
+col_clusters <- as.data.frame(col_clusters)
+colnames(col_clusters) <- "Cluster"
+col_clusters$Patient <- rownames(col_clusters)
+col_clusters$Cluster[col_clusters$Cluster == "1"] <- "tmp"
+col_clusters$Cluster[col_clusters$Cluster == "2"] <- "1"
+col_clusters$Cluster[col_clusters$Cluster == "tmp"] <- "2"
+df_km <- merge(col_clusters, df_metadata_surv_conv, by = "Patient")
+rownames(df_km) <- df_km$Patient
+km_plot <- ggsurvplot(survfit(Surv(OS.delay, OS.event) ~ Cluster, data = df_km),
+             pval = TRUE,
+             conf.int = FALSE,
+             ggtheme = theme_bw(),
+             palette = c("#E7B800", "#2E9FDF", "#FF6F61"))
+km_plot$plot
+```
+
+\newpage
+
+# V. CTAs expression in CHS and normal tissues
+```{r, fig.cap="Scatter plot"}
+# Means consensus
+df <- as.data.frame(t(df_hpa_cta[ !rownames(df_hpa_cta) == "testis",]))
+df_mean_tissue <- as.data.frame(rowMeans(df))
+colnames(df_mean_tissue) <- "Mean_expression_tissues"
+df_mean_tissue$SYMBOL <- rownames(df_mean_tissue)
+
+# Means CTA
+df_int_cta <- subset(df_CTA_immune_whole_clean_avg_63, CTA == "CTA")
+df_int_cta <- df_int_cta %>%
+  dplyr::select(-Signature, -CTA)
+df_mean_expr <- as.data.frame(rowMeans(df_int_cta))
+colnames(df_mean_expr) <- "Intensity"
+df_mean_expr$SYMBOL <- rownames(df_mean_expr)
+
+# Merge
+df_scatter <- merge(df_mean_expr, df_mean_tissue, by = "SYMBOL")
+df_clust_cta <- as.data.frame(row_clusters)
+colnames(df_clust_cta) <- "Cluster"
+df_clust_cta$SYMBOL <- rownames(df_clust_cta)
+df_clust_cta$Cluster[df_clust_cta$Cluster == "1"] <- "B"
+df_clust_cta$Cluster[df_clust_cta$Cluster == "2"] <- "A"
+df_clust_cta$Cluster[df_clust_cta$Cluster == "3"] <- "C"
+
+# Write table
+#write.table(df_clust_cta, "../results/clusters_cta_signif_conv_indiv.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+df_scatter <- merge(df_scatter, df_clust_cta, by = "SYMBOL", all.x = T)
+df_scatter$Cluster <- as.character(df_scatter$Cluster)
+df_scatter$Mean_expression_tissues[df_scatter$Mean_expression_tissues == 0]<- 0.001
+df_scatter$Mean_expression_tissues_log10 <- log10(df_scatter$Mean_expression_tissues)
+
+# Adding HR data
+df_hr <- res_cta_signif[, c("Variable", "HR")]
+df_hr$SYMBOL <- df_hr$Variable
+df_scatter_hr <- merge(df_scatter, df_hr, by = "SYMBOL", all.x = T)
+
+# Add HR value to add point size
+df_scatter_hr$HR <- ifelse(is.na(df_scatter_hr$HR), 0.1, df_scatter_hr$HR)
+
+# Save df
+#write.table(df_scatter_hr, "../results/table_scatter_63_complete.tsv", sep = "\t", quote = F)
+
+# plot
+p <- ggplot(df_scatter_hr,
+            aes(x = Mean_expression_tissues, 
+                y = Intensity, 
+                color = Cluster,
+                size = HR,
+                text = paste0("Gene: ", SYMBOL,
+                              "<br>Mean expression: ", round(Mean_expression_tissues, 3),
+                              "<br>Intensity: ", round(Intensity, 3),
+                              "<br>HR: ", round(HR, 3),
+                              "<br>Cluster: ", Cluster))) +
+            geom_point(alpha = 0.8) +
+            geom_vline(xintercept = quantile(df_scatter_hr$Mean_expression_tissues, 0.75), linetype = "dashed", color = "black") +
+            geom_hline(yintercept = median(df_scatter_hr$Intensity), linetype = "dashed", color = "black") +
+            annotate("text", x = max(df_scatter_hr$Mean_expression_tissues), y = median(df_scatter_hr$Intensity) + 0.3, label = "Median\nexpression", size = 2.5) +
+            annotate("text", x = quantile(df_scatter_hr$Mean_expression_tissues, 0.75) + 4, y = max(df_scatter_hr$Intensity) + 0.2, label = "75th percentile", size = 2.5) +
+            scale_size_continuous(range = c(1, 4), breaks = c(min(df_scatter_hr[!is.na(df_scatter_hr$Cluster), "HR"]), 1, max(df_scatter_hr$HR, na.rm = TRUE)), labels = ~ round(.x, 2)) +
+            scale_color_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C"), na.value = "#b0b0b0") +
+            theme_minimal() +
+            scale_x_log10(breaks = c(0.01, 1, 100), labels = c("0.01", "1", "100")) +
+            labs(x = "CTAs expression in normal tissues (Log10 TPM mean)", 
+                 y = "CTAs expression in CHS (mean intensities)", 
+                 size = "Sized according\nto HR(only for\ncolored points)",
+                 color = "CTAs cluster")
+p
+```
+
+\newpage
+```{r}
+df <- df_scatter_hr[ df_scatter_hr$Intensity > median(df_scatter_hr$Intensity) & df_scatter_hr$Mean_expression_tissues < quantile(df_scatter_hr$Mean_expression_tissues, 0.75), ]
+
+# Genes to add label
+genes <- c("SDK2", "TPTE", "UTF1", "HES3", "HMGB4", "DMRTC2", "DMBX1", "HHIPL2", "TEKT4", "CT45A1", "VCX2", "PCSK4", "TCTE1", "KIF15", "FHAD1", "SYCE2", "KIF18A", "CDCA2", "CDC25C", "COX6B2", "ACR", "HIPK4", "CCDC15", "EME1", "PPEF1", "DIAPH3", "CBX2", "AKR1E2", "PNMA5", "PRND", "CTAG2", "BRIP1", "SPATC1", "DBF4", "TMEM89", "POU4F1", "IGF2BP1", "PRAME", "CATSPER3", "CLSPN", "DEPDC1", "HBZ", "STAG3", "LRRC18", "MAGEA3", "MAGEA1", "MAGEC2", "FAM170B", "C2orf78", "PRPS1L1", "CT47B1", "POTEC", "DMP1", "C3orf22", "DNAJB8", "ACTL9")
+
+# Plot
+p <- ggplot(df,
+       aes(x = Mean_expression_tissues, 
+           y = Intensity, 
+           color = Cluster,
+           size = HR,
+           text = paste0("Gene: ", SYMBOL,
+                         "<br>Mean expression: ", round(Mean_expression_tissues, 3),
+                         "<br>Intensity: ", round(Intensity, 3),
+                         "<br>HR: ", round(HR, 3),
+                         "<br>Cluster: ", Cluster))) +
+       geom_point(alpha = 0.8) +
+       geom_hline(yintercept = median(df_scatter_hr$Intensity), linetype = "dashed", color = "black") +
+       geom_vline(xintercept = quantile(df_scatter_hr$Mean_expression_tissues, 0.75), linetype = "dashed", color = "black") +
+       scale_color_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C"), na.value = "#b0b0b0") +
+       theme_minimal() +
+       scale_x_log10() +
+       scale_size_continuous(range = c(1, 4), breaks = c(min(df_scatter_hr[!is.na(df_scatter_hr$Cluster), "HR"]), 1, max(df_scatter_hr$HR, na.rm = TRUE)), labels = ~ round(.x, 2)) +
+       scale_color_manual(values = c("A" = "#3498DB", "B" = "#2ECC71", "C" = "#E74C3C"), na.value = "#b0b0b0") +
+       theme_minimal() +
+       scale_x_log10() +
+       geom_text_repel(data = df[df$SYMBOL %in% genes,], aes(label = SYMBOL),
+        size = 3,
+        color = "black",
+        max.overlaps = 20,
+        box.padding = 0.4,
+        segment.color = "black",
+        segment.size = 0.3,
+        min.segment.length = 0) +
+       labs(x = "CTAs expression in normal tissues (Log10 TPM mean)", 
+            y = "CTAs expression in CHS (mean intensities)", 
+            size = "Sized according\nto HR(only for\ncolored points)",
+            color = "CTAs cluster")
+p
+```
+\newpage
+
+```{r}
+#ggplotly(p, tooltip = "text")
+```
+
+# VI. Gene ontology
+```{r}
+cluster_a <- df_scatter_hr$SYMBOL[df_scatter_hr$Cluster == "A" & !is.na(df_scatter_hr$Cluster)]
+cluster_b <- df_scatter_hr$SYMBOL[df_scatter_hr$Cluster == "B" & !is.na(df_scatter_hr$Cluster)]
+cluster_c <- df_scatter_hr$SYMBOL[df_scatter_hr$Cluster == "C" & !is.na(df_scatter_hr$Cluster)]
+```
+
+```{r}
+go_a <- enrichGO(
+    gene = cluster_a,
+    OrgDb = org.Hs.eg.db,
+    keyType = "SYMBOL",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05
+)
+
+go_b <- enrichGO(
+    gene = cluster_b,
+    OrgDb = org.Hs.eg.db,
+    keyType = "SYMBOL",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05
+)
+
+go_c <- enrichGO(
+    gene = cluster_c,
+    OrgDb = org.Hs.eg.db,
+    keyType = "SYMBOL",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05
+)
+```
+
+```{r, fig.height=8}
+dotplot(go_a, showCategory = 15)
+dotplot(go_b, showCategory = 20)
+dotplot(go_c, showCategory = 20)
+```
+
